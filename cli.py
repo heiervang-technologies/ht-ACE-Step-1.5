@@ -66,7 +66,7 @@ from acestep.handler import AceStepHandler
 from acestep.llm_inference import LLMHandler
 from acestep.inference import GenerationParams, GenerationConfig, generate_music, create_sample, format_sample
 from acestep.constants import DEFAULT_DIT_INSTRUCTION, TASK_INSTRUCTIONS
-from acestep.gpu_config import get_gpu_config, set_global_gpu_config, GPUConfig, GPU_TIER_CONFIGS
+from acestep.gpu_config import get_gpu_config, set_global_gpu_config
 import torch
 
 
@@ -468,21 +468,6 @@ def _resolve_device(device: str) -> str:
     return device
 
 
-def _get_mps_wired_limit_mb() -> Optional[int]:
-    """Best-effort read of iogpu.wired_limit_mb on macOS (may be unavailable)."""
-    try:
-        import subprocess
-        out = subprocess.check_output(["sysctl", "iogpu.wired_limit_mb"], text=True).strip()
-        # Expected: "iogpu.wired_limit_mb: 12345"
-        parts = out.split(":")
-        if len(parts) == 2:
-            value = parts[1].strip()
-            return int(value)
-    except Exception:
-        pass
-    return None
-
-
 def _default_instruction_for_task(task_type: str, tracks: Optional[List[str]] = None) -> str:
     if task_type == "lego":
         track = tracks[0] if tracks else "guitar"
@@ -855,7 +840,7 @@ def run_wizard(args, configure_only: bool = False, default_config_path: Optional
 
         args.batch_size = _prompt_int(
             "Number of outputs (audio clips) to generate",
-            args.batch_size if args.batch_size is not None else 1,
+            args.batch_size if args.batch_size is not None else 2,
             min_value=1,
         )
 
@@ -990,49 +975,11 @@ def main():
     """
     Main function to run ACE-Step music generation from the command line.
     """
-    gpu_config = get_gpu_config()
-    # Override tier thresholds in CLI without modifying gpu_config.py.
-    # For MPS, use iogpu.wired_limit_mb as a proxy for memory when available.
-    mem_gib = None
-    if gpu_config.gpu_memory_gb > 0:
-        mem_gib = gpu_config.gpu_memory_gb
-    else:
-        mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-        if mps_available:
-            wired_limit_mb = _get_mps_wired_limit_mb()
-            if wired_limit_mb is not None and wired_limit_mb > 0:
-                mem_gib = wired_limit_mb / 1024.0
-    if mem_gib is not None and mem_gib > 0:
-        if mem_gib <= 24:
-            effective_tier = "tier1"
-        elif mem_gib <= 32:
-            effective_tier = "tier2"
-        elif mem_gib <= 40:
-            effective_tier = "tier3"
-        elif mem_gib <= 48:
-            effective_tier = "tier4"
-        elif mem_gib <= 56:
-            effective_tier = "tier5"
-        elif mem_gib <= 64:
-            effective_tier = "tier6"
-        else:
-            effective_tier = "unlimited"
-        if effective_tier != gpu_config.tier:
-            tier_config = GPU_TIER_CONFIGS[effective_tier]
-            gpu_config = GPUConfig(
-                tier=effective_tier,
-                gpu_memory_gb=mem_gib,
-                max_duration_with_lm=tier_config["max_duration_with_lm"],
-                max_duration_without_lm=tier_config["max_duration_without_lm"],
-                max_batch_size_with_lm=tier_config["max_batch_size_with_lm"],
-                max_batch_size_without_lm=tier_config["max_batch_size_without_lm"],
-                init_lm_default=tier_config["init_lm_default"],
-                available_lm_models=tier_config["available_lm_models"],
-                lm_memory_gb=tier_config["lm_memory_gb"],
-            )
-    set_global_gpu_config(gpu_config)
 
+    gpu_config = get_gpu_config()
+    set_global_gpu_config(gpu_config)
     auto_offload = gpu_config.gpu_memory_gb > 0 and gpu_config.gpu_memory_gb < 16
+    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     print(f"\n{'='*60}")
     print("GPU Configuration Detected:")
     print(f"{'='*60}")
@@ -1044,22 +991,6 @@ def main():
     print(f"  Max Batch Size (without LM): {gpu_config.max_batch_size_without_lm}")
     print(f"  Default LM Init: {gpu_config.init_lm_default}")
     print(f"  Available LM Models: {gpu_config.available_lm_models or 'None'}")
-    mps_available = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-    if mps_available and gpu_config.gpu_memory_gb <= 0:
-        wired_limit_mb = _get_mps_wired_limit_mb()
-        if wired_limit_mb is not None:
-            print(f"  MPS Available: True (wired limit: {wired_limit_mb} MB)")
-        else:
-            print("  MPS Available: True (wired limit: unknown)")
-        print("  Note: MPS memory is not reported here; tier may be inaccurate.")
-    elif mps_available and gpu_config.gpu_memory_gb > 0:
-        wired_limit_mb = _get_mps_wired_limit_mb()
-        if wired_limit_mb is not None:
-            print(f"  MPS Available: True (wired limit: {wired_limit_mb} MB)")
-            print("  Note: Tiering uses MPS wired limit as a proxy for GPU memory.")
-        else:
-            print("  MPS Available: True (wired limit: unknown)")
-            print("  Note: Tiering uses MPS wired limit when available.")
     print(f"{'='*60}\n")
 
     if auto_offload:
@@ -1081,6 +1012,13 @@ def main():
     parser.add_argument("-c", "--config", type=str, help="Path to a TOML configuration file to load.")
     parser.add_argument("--configure", action="store_true", help="Run wizard to save configuration without generating.")
     parser.add_argument(
+        "--backend",
+        type=str,
+        default=None,
+        choices=["vllm", "pt", "mlx"],
+        help="5Hz LM backend. Auto-detected if not specified: 'mlx' on Apple Silicon, 'vllm' on CUDA, 'pt' otherwise.",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -1091,12 +1029,24 @@ def main():
     _configure_logging(level=cli_args.log_level)
 
     default_batch_size = 1 if not cli_args.config else config_defaults.batch_size
+
+    # Auto-detect MLX on Apple Silicon, fall back to vllm
+    if mps_available:
+        try:
+            import mlx.core  # noqa: F401
+            default_backend = "mlx"
+            print("Apple Silicon detected with MLX available. Using MLX backend.")
+        except ImportError:
+            default_backend = "vllm"
+    else:
+        default_backend = "vllm"
+
     defaults = {
         "project_root": _get_project_root(),
         "config_path": None,
         "checkpoint_dir": os.path.join(_get_project_root(), "checkpoints"),
         "lm_model_path": None,
-        "backend": "vllm",
+        "backend": default_backend,
         "device": "auto",
         "use_flash_attention": None,
         "offload_to_cpu": auto_offload,
@@ -1169,6 +1119,10 @@ def main():
         for key, value in config_from_file.items():
             setattr(args, key, value)
         args.config = cli_args.config
+
+    # CLI --backend overrides config file and auto-detection
+    if cli_args.backend is not None:
+        args.backend = cli_args.backend
 
     if cli_args.configure:
         args, _ = run_wizard(
@@ -1330,6 +1284,8 @@ def main():
     # --- Handler Initialization ---
     if args.backend == "pyTorch":
         args.backend = "pt"
+    if args.backend not in {"vllm", "pt", "mlx"}:
+        args.backend = "vllm"
 
     print("Initializing ACE-Step handlers...")
     dit_handler = AceStepHandler()
@@ -1418,7 +1374,7 @@ def main():
 
     use_flash_attention = args.use_flash_attention
     if use_flash_attention is None:
-        use_flash_attention = dit_handler.is_flash_attention_available()
+        use_flash_attention = dit_handler.is_flash_attention_available(device)
 
     print(f"Initializing DiT handler with model: {args.config_path}")
     dit_handler.initialize_service(
@@ -1469,7 +1425,7 @@ def main():
             backend=args.backend,
             device=device,
             offload_to_cpu=args.offload_to_cpu,
-            dtype=dit_handler.dtype,
+            dtype=None,
         )
     else:
         if args.task_type in skip_lm_tasks:
@@ -1634,37 +1590,7 @@ def main():
                 use_instruction_file = False
         if use_instruction_file:
             print(f"INFO: Found {instruction_path}. Using it without editing.")
-            if preloaded_prompt is not None and preloaded_prompt.strip():
-                parsed_caption, parsed_lyrics = _extract_caption_lyrics_from_formatted_prompt(preloaded_prompt)
-                parsed_instruction = _extract_instruction_from_formatted_prompt(preloaded_prompt)
-                parsed_metas = _extract_cot_metadata_from_formatted_prompt(preloaded_prompt)
-                if parsed_caption:
-                    args.caption = parsed_caption
-                if parsed_lyrics:
-                    args.lyrics = parsed_lyrics
-                if parsed_instruction:
-                    args.instruction = parsed_instruction
-                if parsed_metas:
-                    bpm_value = parsed_metas.get("bpm")
-                    if bpm_value:
-                        parsed = _parse_number(bpm_value)
-                        if parsed is not None:
-                            args.bpm = int(parsed)
-                    duration_value = parsed_metas.get("duration")
-                    if duration_value:
-                        parsed = _parse_number(duration_value)
-                        if parsed is not None:
-                            args.duration = float(parsed)
-                    keyscale_value = parsed_metas.get("keyscale")
-                    if keyscale_value:
-                        args.keyscale = keyscale_value
-                    timesignature_value = parsed_metas.get("timesignature")
-                    if timesignature_value:
-                        args.timesignature = timesignature_value
-                    language_value = parsed_metas.get("language") or parsed_metas.get("vocal_language")
-                    if language_value:
-                        args.vocal_language = language_value
-        elif preloaded_prompt is not None and not preloaded_prompt.strip():
+        if preloaded_prompt is not None and not preloaded_prompt.strip():
             preloaded_prompt = None
         _install_prompt_edit_hook(llm_handler, instruction_path, preloaded_prompt=preloaded_prompt)
 

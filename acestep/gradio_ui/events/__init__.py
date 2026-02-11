@@ -4,6 +4,7 @@ Main entry point for setting up all event handlers
 """
 import gradio as gr
 from typing import Optional
+from loguru import logger
 
 # Import handler modules
 from . import generation_handlers as gen_h
@@ -69,6 +70,9 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
             generation_section["cfg_interval_start"],
             generation_section["cfg_interval_end"],
             generation_section["task_type"],
+            # GPU-config-aware limits (updated after initialization)
+            generation_section["audio_duration"],
+            generation_section["batch_size_input"],
         ]
     )
     
@@ -483,7 +487,8 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
                 generation_section["key_scale"],
                 generation_section["vocal_language"],
                 generation_section["time_signature"],
-                results_section["is_format_caption_state"]
+                results_section["is_format_caption_state"],
+                generation_section["audio_uploads_accordion"]
             ]
         )
     
@@ -538,6 +543,19 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
         yield from res_h.generate_with_batch_management(dit_handler, llm_handler, *args)
     # ========== Generation Handler ==========
     generation_section["generate_btn"].click(
+        fn=res_h.clear_audio_outputs_for_new_generation,
+        outputs=[
+            results_section["generated_audio_1"],
+            results_section["generated_audio_2"],
+            results_section["generated_audio_3"],
+            results_section["generated_audio_4"],
+            results_section["generated_audio_5"],
+            results_section["generated_audio_6"],
+            results_section["generated_audio_7"],
+            results_section["generated_audio_8"],
+            results_section["generated_audio_batch"],
+        ],
+    ).then(
         fn=generation_wrapper,
         inputs=[
             generation_section["captions"],
@@ -647,7 +665,7 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
             results_section["next_batch_btn"],
             results_section["next_batch_status"],
             results_section["restore_params_btn"],
-        ]
+        ],
     ).then(
         fn=lambda *args: res_h.generate_next_batch_background(dit_handler, llm_handler, *args),
         inputs=[
@@ -935,6 +953,12 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
             training_section["edit_instrumental"],
             training_section["raw_lyrics_display"],
             training_section["has_raw_lyrics_state"],
+            # Update dataset-level settings
+            training_section["dataset_name"],
+            training_section["custom_tag"],
+            training_section["tag_position"],
+            training_section["all_instrumental"],
+            training_section["genre_ratio"],
         ]
     ).then(
         fn=lambda has_raw: gr.update(visible=has_raw),
@@ -982,6 +1006,37 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
             training_section["label_progress"],
             training_section["dataset_builder_state"],
         ]
+    ).then(
+        # Refresh preview/edit fields after labeling completes
+        fn=train_h.get_sample_preview,
+        inputs=[
+            training_section["sample_selector"],
+            training_section["dataset_builder_state"],
+        ],
+        outputs=[
+            training_section["preview_audio"],
+            training_section["preview_filename"],
+            training_section["edit_caption"],
+            training_section["edit_genre"],
+            training_section["prompt_override"],
+            training_section["edit_lyrics"],
+            training_section["edit_bpm"],
+            training_section["edit_keyscale"],
+            training_section["edit_timesig"],
+            training_section["edit_duration"],
+            training_section["edit_language"],
+            training_section["edit_instrumental"],
+            training_section["raw_lyrics_display"],
+            training_section["has_raw_lyrics_state"],
+        ]
+    ).then(
+        fn=lambda status: f"{status or '✅ Auto-label complete.'}\n✅ Preview refreshed.",
+        inputs=[training_section["label_progress"]],
+        outputs=[training_section["label_progress"]],
+    ).then(
+        fn=lambda has_raw: gr.update(visible=bool(has_raw)),
+        inputs=[training_section["has_raw_lyrics_state"]],
+        outputs=[training_section["raw_lyrics_display"]],
     )
 
     # Mutual exclusion: format_lyrics and transcribe_lyrics cannot both be True
@@ -1072,7 +1127,10 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
             training_section["dataset_name"],
             training_section["dataset_builder_state"],
         ],
-        outputs=[training_section["save_status"]]
+        outputs=[
+            training_section["save_status"],
+            training_section["save_path"],
+        ]
     )
     
     # ========== Preprocess Handlers ==========
@@ -1105,6 +1163,12 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
             training_section["edit_instrumental"],
             training_section["raw_lyrics_display"],
             training_section["has_raw_lyrics_state"],
+            # Update dataset-level settings
+            training_section["dataset_name"],
+            training_section["custom_tag"],
+            training_section["tag_position"],
+            training_section["all_instrumental"],
+            training_section["genre_ratio"],
         ]
     ).then(
         fn=lambda has_raw: gr.update(visible=has_raw),
@@ -1134,12 +1198,15 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
     )
     
     # Start training from preprocessed tensors
-    def training_wrapper(tensor_dir, r, a, d, lr, ep, bs, ga, se, sh, sd, od, ts):
+    def training_wrapper(tensor_dir, r, a, d, lr, ep, bs, ga, se, sh, sd, od, rc, ts):
+        from loguru import logger
+        if not isinstance(ts, dict):
+            ts = {"is_training": False, "should_stop": False}
         try:
-            for progress, log, plot, state in train_h.start_training(
-                tensor_dir, dit_handler, r, a, d, lr, ep, bs, ga, se, sh, sd, od, ts
+            for progress, log_msg, plot, state in train_h.start_training(
+                tensor_dir, dit_handler, r, a, d, lr, ep, bs, ga, se, sh, sd, od, rc, ts
             ):
-                yield progress, log, plot, state
+                yield progress, log_msg, plot, state
         except Exception as e:
             logger.exception("Training wrapper error")
             yield f"❌ Error: {str(e)}", str(e), None, ts
@@ -1159,6 +1226,7 @@ def setup_training_event_handlers(demo, dit_handler, llm_handler, training_secti
             training_section["training_shift"],
             training_section["training_seed"],
             training_section["lora_output_dir"],
+            training_section["resume_checkpoint_dir"],
             training_section["training_state"],
         ],
         outputs=[
