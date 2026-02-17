@@ -8,7 +8,10 @@ from .conditioning_masks import ConditioningMaskMixin
 from .conditioning_target import ConditioningTargetMixin
 from .conditioning_text import ConditioningTextMixin
 from .diffusion import DiffusionMixin
+from .generate_music import GenerateMusicMixin
+from .generate_music_decode import GenerateMusicDecodeMixin
 from .generate_music_execute import GenerateMusicExecuteMixin
+from .generate_music_payload import GenerateMusicPayloadMixin
 from .generate_music_request import GenerateMusicRequestMixin
 from .init_service import InitServiceMixin
 from .io_audio import IoAudioMixin
@@ -44,7 +47,10 @@ __all__ = [
     "ConditioningTargetMixin",
     "ConditioningTextMixin",
     "DiffusionMixin",
+    "GenerateMusicMixin",
+    "GenerateMusicDecodeMixin",
     "GenerateMusicExecuteMixin",
+    "GenerateMusicPayloadMixin",
     "GenerateMusicRequestMixin",
     "InitServiceMixin",
     "IoAudioMixin",
