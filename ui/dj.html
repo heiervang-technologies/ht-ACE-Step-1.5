@@ -469,10 +469,10 @@
         </div>
 
         <div class="control-group">
-            <label>Crossfade Duration (s)</label>
+            <label>Context Prefill (s)</label>
             <div class="range-row">
-                <input type="range" id="xfadeDuration" min="0.5" max="10" step="0.5" value="2">
-                <span class="range-val" id="xfadeDurationVal">2.0</span>
+                <input type="range" id="contextDuration" min="2" max="30" step="1" value="10">
+                <span class="range-val" id="contextDurationVal">10</span>
             </div>
         </div>
 
@@ -620,8 +620,8 @@
         lyrics:         $('lyrics'),
         segDuration:    $('segDuration'),
         segDurationVal: $('segDurationVal'),
-        xfadeDuration:  $('xfadeDuration'),
-        xfadeDurationVal: $('xfadeDurationVal'),
+        contextDuration:  $('contextDuration'),
+        contextDurationVal: $('contextDurationVal'),
         bpm:            $('bpm'),
         keyScale:       $('keyScale'),
         vocalLanguage:  $('vocalLanguage'),
@@ -655,7 +655,7 @@
         update();
     }
     wireSlider(dom.segDuration,   dom.segDurationVal,   v => v);
-    wireSlider(dom.xfadeDuration, dom.xfadeDurationVal, v => parseFloat(v).toFixed(1));
+    wireSlider(dom.contextDuration, dom.contextDurationVal, v => v);
     wireSlider(dom.infSteps,      dom.infStepsVal,      v => v);
     wireSlider(dom.cfgScale,      dom.cfgScaleVal,      v => parseFloat(v).toFixed(1));
     wireSlider(dom.masterVolume,  dom.volumeVal,        v => v + '%');
@@ -736,7 +736,7 @@
 
             /**
              * Each segment:
-             * { index, prompt, lyrics, audioBlob, audioBuffer, metas,
+             * { index, prompt, lyrics, fullBuffer, audioBuffer, metas,
              *   source, gainNode, startTime, endTime }
              */
             this.segments = [];
@@ -753,8 +753,11 @@
             /** The next segment we have decoded and ready to schedule. */
             this.nextReady = null;
 
-            /** Server-side file path of the last generated audio (for reference chaining). */
-            this.lastRefBlob = null;
+            /**
+             * AudioBuffer of the last generated segment (full, before trimming).
+             * Used to extract the tail as context prefill for repaint.
+             */
+            this.lastFullBuffer = null;
 
             /** ID for the lookahead scheduler interval. */
             this.schedulerInterval = null;
@@ -867,42 +870,99 @@
         // ============================================================
 
         /**
-         * Generate a new segment via the ACE-Step API.
-         * @param {string|null} refPath  Server-side audio path for reference conditioning.
-         * @returns {Promise<object>}     Segment data.
+         * Extract the tail of an AudioBuffer as a WAV blob for upload.
+         * @param {AudioBuffer} buffer  Source buffer.
+         * @param {number} tailSeconds  How many seconds from the end to extract.
+         * @returns {Blob}  WAV blob of the tail portion.
          */
-        async _generateSegment(refPath) {
+        _extractTailAsWav(buffer, tailSeconds) {
+            const sr = buffer.sampleRate;
+            const channels = buffer.numberOfChannels;
+            const tailFrames = Math.min(Math.round(tailSeconds * sr), buffer.length);
+            const startFrame = buffer.length - tailFrames;
+
+            // Build interleaved PCM16
+            const samples = tailFrames * channels;
+            const pcmData = new Int16Array(samples);
+            for (let ch = 0; ch < channels; ch++) {
+                const chData = buffer.getChannelData(ch);
+                for (let i = 0; i < tailFrames; i++) {
+                    const s = Math.max(-1, Math.min(1, chData[startFrame + i]));
+                    pcmData[i * channels + ch] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+            }
+
+            // WAV header
+            const wavSize = 44 + pcmData.byteLength;
+            const wavBuf = new ArrayBuffer(wavSize);
+            const view = new DataView(wavBuf);
+            const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+            writeStr(0, 'RIFF');
+            view.setUint32(4, wavSize - 8, true);
+            writeStr(8, 'WAVE');
+            writeStr(12, 'fmt ');
+            view.setUint32(16, 16, true);       // chunk size
+            view.setUint16(20, 1, true);         // PCM
+            view.setUint16(22, channels, true);
+            view.setUint32(24, sr, true);
+            view.setUint32(28, sr * channels * 2, true); // byte rate
+            view.setUint16(32, channels * 2, true);      // block align
+            view.setUint16(34, 16, true);        // bits per sample
+            writeStr(36, 'data');
+            view.setUint32(40, pcmData.byteLength, true);
+            new Int16Array(wavBuf, 44).set(pcmData);
+
+            return new Blob([wavBuf], { type: 'audio/wav' });
+        }
+
+        /**
+         * Generate a new segment via the ACE-Step API.
+         *
+         * First segment: task_type=text2music (no context).
+         * Subsequent: task_type=repaint with tail of previous audio as
+         * ctx_audio prefill. The model outpaints beyond the context,
+         * producing seamless continuation without crossfade artifacts.
+         *
+         * @param {Blob|null} ctxBlob  WAV blob of context audio (tail of previous segment).
+         * @param {number} contextDur  Duration of the context audio in seconds.
+         * @returns {Promise<object>}  Segment data.
+         */
+        async _generateSegment(ctxBlob, contextDur) {
             const params = readParams();
             const segIndex = this.segCounter++;
             const apiBase = getApiBase();
+            const isRepaint = ctxBlob !== null;
+            const totalDur = isRepaint ? contextDur + params.audio_duration : params.audio_duration;
 
-            log(`[Seg #${segIndex}] Generating (dur=${params.audio_duration}s)...`, 'log-gen');
+            log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s new = ${totalDur}s total)...`, 'log-gen');
             setPipelineStage('generating');
 
             // --- 1. Release task ---
-            // Use FormData when we have a reference audio blob to upload,
-            // otherwise use JSON for the first segment.
             let releaseRes;
-            if (refPath && refPath instanceof Blob) {
+            if (isRepaint) {
+                // Repaint mode: upload context audio as ctx_audio
                 const fd = new FormData();
                 fd.append('prompt', params.prompt);
                 fd.append('lyrics', params.lyrics);
-                fd.append('audio_duration', params.audio_duration);
-                fd.append('task_type', 'text2music');
+                fd.append('audio_duration', totalDur);
+                fd.append('task_type', 'repaint');
+                fd.append('repainting_start', contextDur);
+                fd.append('repainting_end', totalDur);
                 fd.append('inference_steps', params.inference_steps);
                 fd.append('guidance_scale', params.guidance_scale);
                 fd.append('thinking', params.thinking);
                 fd.append('batch_size', 1);
-                fd.append('audio_format', 'mp3');
+                fd.append('audio_format', 'wav');  // WAV for lossless context preservation
                 fd.append('vocal_language', params.vocal_language);
                 if (params.bpm) fd.append('bpm', params.bpm);
                 if (params.key_scale) fd.append('key_scale', params.key_scale);
-                fd.append('ref_audio', refPath, 'reference.mp3');
+                fd.append('ctx_audio', ctxBlob, 'context.wav');
                 releaseRes = await fetch(`${apiBase}/release_task`, {
                     method: 'POST',
                     body: fd,
                 });
             } else {
+                // First segment: text2music, no context
                 const body = {
                     prompt:              params.prompt,
                     lyrics:              params.lyrics,
@@ -912,7 +972,7 @@
                     guidance_scale:      params.guidance_scale,
                     thinking:            params.thinking,
                     batch_size:          1,
-                    audio_format:        'mp3',
+                    audio_format:        'wav',
                     vocal_language:      params.vocal_language,
                 };
                 if (params.bpm) body.bpm = params.bpm;
@@ -951,25 +1011,44 @@
             const audioUrl = fileUrl.startsWith('http') ? fileUrl : `${apiBase}${fileUrl}`;
             const audioRes = await fetch(audioUrl);
             if (!audioRes.ok) throw new Error(`Audio download failed: ${audioRes.status}`);
-            // Keep the blob for reference audio upload on next segment
-            const audioBlob = await audioRes.blob();
-            const arrayBuf = await audioBlob.arrayBuffer();
+            const arrayBuf = await audioRes.arrayBuffer();
 
-            // --- 5. Decode ---
+            // --- 5. Decode full output ---
             log(`[Seg #${segIndex}] Decoding audio buffer...`, 'log-info');
             setPipelineStage('decoding');
 
-            const audioBuffer = await this.audioCtx.decodeAudioData(arrayBuf);
+            const fullBuffer = await this.audioCtx.decodeAudioData(arrayBuf);
 
-            log(`[Seg #${segIndex}] Ready (${audioBuffer.duration.toFixed(1)}s, BPM=${metas.bpm || '?'}, Key=${metas.keyscale || '?'})`, 'log-success');
+            // --- 6. Trim context prefix for playback ---
+            // For repaint segments, the first contextDur seconds are the prefilled
+            // context (kept as ground truth by the diffusion mask). We only play
+            // the newly generated portion.
+            let playbackBuffer = fullBuffer;
+            if (isRepaint) {
+                const sr = fullBuffer.sampleRate;
+                const trimFrames = Math.round(contextDur * sr);
+                const newFrames = fullBuffer.length - trimFrames;
+                if (newFrames > 0) {
+                    playbackBuffer = this.audioCtx.createBuffer(
+                        fullBuffer.numberOfChannels, newFrames, sr
+                    );
+                    for (let ch = 0; ch < fullBuffer.numberOfChannels; ch++) {
+                        const src = fullBuffer.getChannelData(ch);
+                        playbackBuffer.copyToChannel(src.subarray(trimFrames), ch);
+                    }
+                    log(`[Seg #${segIndex}] Trimmed ${contextDur}s context → ${(newFrames / sr).toFixed(1)}s playback`, 'log-info');
+                }
+            }
+
+            log(`[Seg #${segIndex}] Ready (${playbackBuffer.duration.toFixed(1)}s, BPM=${metas.bpm || '?'}, Key=${metas.keyscale || '?'})`, 'log-success');
             setPipelineStage('ready');
 
             const segment = {
                 index: segIndex,
                 prompt: params.prompt,
                 lyrics: params.lyrics,
-                audioBlob,
-                audioBuffer,
+                fullBuffer,      // Full output including context (for extracting next tail)
+                audioBuffer: playbackBuffer,  // Trimmed buffer for playback
                 metas,
                 source: null,
                 gainNode: null,
@@ -1048,14 +1127,14 @@
         // ============================================================
 
         /**
-         * Schedule a segment for playback at a specific AudioContext time.
-         * Wires up cross-fade gain envelopes.
+         * Schedule a segment for gapless playback at a specific AudioContext time.
+         * Since repaint provides model-level continuity, no crossfade envelopes
+         * are needed — segments play back-to-back seamlessly.
          *
          * @param {object} segment
          * @param {number} startTime  AudioContext time to begin playback.
-         * @param {number} xfadeDur   Cross-fade duration in seconds.
          */
-        _scheduleSegment(segment, startTime, xfadeDur) {
+        _scheduleSegment(segment, startTime) {
             const source = this.audioCtx.createBufferSource();
             source.buffer = segment.audioBuffer;
 
@@ -1066,19 +1145,10 @@
             const dur = segment.audioBuffer.duration;
             const endTime = startTime + dur;
 
-            // --- Fade in ---
-            gainNode.gain.setValueAtTime(0, startTime);
-            gainNode.gain.linearRampToValueAtTime(1, startTime + xfadeDur);
-
-            // --- Fade out ---
-            const fadeOutStart = endTime - xfadeDur;
-            if (fadeOutStart > startTime + xfadeDur) {
-                gainNode.gain.setValueAtTime(1, fadeOutStart);
-                gainNode.gain.linearRampToValueAtTime(0, endTime);
-            }
+            // Constant gain — no crossfade needed
+            gainNode.gain.setValueAtTime(1, startTime);
 
             source.start(startTime);
-            source.stop(endTime);
 
             segment.source = source;
             segment.gainNode = gainNode;
@@ -1097,35 +1167,34 @@
             setPipelineStage('playing');
             this._updateNowPlaying(segment);
 
-            return { startTime, endTime, fadeOutStart: Math.max(fadeOutStart, startTime) };
+            return { startTime, endTime };
         }
 
         /**
          * The lookahead scheduler — runs every 200ms.
-         * Checks if the currently playing segment is approaching its crossfade
-         * point, and if so, schedules the next segment (if ready).
+         * Checks if the currently playing segment is approaching its end,
+         * and if so, schedules the next segment gaplessly at the end time.
          * Also kicks off generation of the next segment if not already doing so.
          */
         _lookahead() {
             if (!this.running || !this.audioCtx) return;
 
             const now = this.audioCtx.currentTime;
-            const xfadeDur = parseFloat(dom.xfadeDuration.value);
-            const lookaheadWindow = xfadeDur + 1.0; // schedule slightly ahead
+            const lookaheadWindow = 2.0; // schedule 2s before end
 
             // Find the last scheduled segment
             const lastSeg = this.segments.length > 0 ? this.segments[this.segments.length - 1] : null;
 
             if (lastSeg) {
-                const fadeOutStart = lastSeg.endTime - xfadeDur;
-                const timeUntilFade = fadeOutStart - now;
+                const timeUntilEnd = lastSeg.endTime - now;
 
                 // If next segment is ready and we are within the lookahead window, schedule it
-                if (this.nextReady && timeUntilFade <= lookaheadWindow) {
+                if (this.nextReady && timeUntilEnd <= lookaheadWindow) {
                     const nextSeg = this.nextReady;
                     this.nextReady = null;
 
-                    this._scheduleSegment(nextSeg, fadeOutStart, xfadeDur);
+                    // Gapless: next starts exactly when current ends
+                    this._scheduleSegment(nextSeg, lastSeg.endTime);
 
                     // Immediately begin generating the segment after that
                     this._generateNext();
@@ -1155,39 +1224,44 @@
 
         /**
          * Kick off generation of the next segment.
-         * Uses the last segment's audioBlob as reference for continuity.
+         * First segment: text2music (no context).
+         * Subsequent: repaint with tail of previous segment as audio context prefill.
          * Guards against double-fire.
          */
         async _generateNext() {
             if (!this.running || this.generating) return;
             this.generating = true;
 
-            const refBlob = this.lastRefBlob;
-            dom.refStatus.textContent = refBlob ? `blob (${(refBlob.size/1024).toFixed(0)}KB)` : 'none';
+            const contextDur = parseInt(dom.contextDuration.value, 10);
+            let ctxBlob = null;
+
+            // If we have a previous full buffer, extract its tail as context
+            if (this.lastFullBuffer) {
+                ctxBlob = this._extractTailAsWav(this.lastFullBuffer, contextDur);
+                dom.refStatus.textContent = `ctx ${contextDur}s (${(ctxBlob.size/1024).toFixed(0)}KB)`;
+            } else {
+                dom.refStatus.textContent = 'none (first segment)';
+            }
 
             try {
-                const segment = await this._generateSegment(refBlob);
-                this.lastRefBlob = segment.audioBlob;
+                const segment = await this._generateSegment(ctxBlob, contextDur);
+                this.lastFullBuffer = segment.fullBuffer;
                 this.generating = false;
 
                 if (!this.running) return;  // Engine stopped while generating
 
                 // If this is the very first segment, schedule it immediately
                 if (this.segments.length === 0) {
-                    const xfadeDur = parseFloat(dom.xfadeDuration.value);
-                    // Start playback 0.1s in the future to give the scheduler
-                    // time to set up gain envelopes
                     const playAt = this.audioCtx.currentTime + 0.1;
-                    this._scheduleSegment(segment, playAt, xfadeDur);
+                    this._scheduleSegment(segment, playAt);
 
                     // Begin generating the second segment right away
                     this._generateNext();
                 } else if (this.paused) {
                     // Resume from buffer underrun: schedule immediately
                     this.paused = false;
-                    const xfadeDur = parseFloat(dom.xfadeDuration.value);
                     const playAt = this.audioCtx.currentTime + 0.1;
-                    this._scheduleSegment(segment, playAt, xfadeDur);
+                    this._scheduleSegment(segment, playAt);
                     log('Playback resumed after underrun.', 'log-success');
                     this._generateNext();
                 } else {
@@ -1228,6 +1302,7 @@
                     if (old.gainNode) { old.gainNode.disconnect(); }
                 } catch (_e) { /* already disconnected */ }
                 old.audioBuffer = null;
+                old.fullBuffer = null;
                 old.source = null;
                 old.gainNode = null;
             }

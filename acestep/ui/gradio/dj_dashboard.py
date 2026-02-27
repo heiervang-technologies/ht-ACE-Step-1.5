@@ -1,4 +1,8 @@
-"""ACE-Step DJ Dashboard — continuous music generation via sliding-window stitching.
+"""ACE-Step DJ Dashboard — continuous music generation via repaint-based prefill.
+
+Uses the repaint task type for model-level audio continuity: the tail of
+the previous segment is passed as context, and the DiT generates new audio
+that seamlessly continues from it.
 
 Launch standalone:
     python -m acestep.ui.gradio.dj_dashboard [--port 7861] [--server-name 0.0.0.0]
@@ -7,7 +11,6 @@ Launch standalone:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 from typing import Any
 
@@ -63,8 +66,7 @@ async def _generation_loop(
     prompt: str,
     lyrics: str,
     seg_dur: float,
-    overlap_dur: float,
-    xfade_dur: float,
+    context_dur: float,
     bpm: float | None,
     key: str,
     lang: str,
@@ -76,8 +78,7 @@ async def _generation_loop(
     config = DJConfig(
         api_base=api_url.rstrip("/"),
         segment_duration=seg_dur,
-        overlap_duration=overlap_dur,
-        crossfade_duration=xfade_dur,
+        context_duration=context_dur,
         inference_steps=int(steps),
         guidance_scale=guidance,
         thinking=thinking,
@@ -92,9 +93,10 @@ async def _generation_loop(
 
     while not stitcher.is_stopped:
         seg_num = len(stitcher.segments) + 1
+        is_repaint = seg_num > 1
         status = f"Generating segment {seg_num}..."
-        if stitcher.segments:
-            status += f" (ref from seg {seg_num - 1})"
+        if is_repaint:
+            status += f" (repaint: {context_dur}s context from seg {seg_num - 1})"
         yield (None, _audio_for_gradio(stitcher.accumulated_audio), status, rows)
 
         try:
@@ -119,7 +121,7 @@ async def _generation_loop(
 
         total_dur = stitcher.accumulated_audio.shape[-1] / 48000 if stitcher.accumulated_audio is not None else 0
         yield (
-            _audio_for_gradio(segment.audio_data),
+            _audio_for_gradio(segment.playback_audio),
             _audio_for_gradio(stitcher.accumulated_audio),
             f"Segment {segment.index + 1} done. Total mix: {total_dur:.1f}s",
             rows,
@@ -139,10 +141,10 @@ def create_dj_dashboard() -> gr.Blocks:
 
     with gr.Blocks(title="ACE-Step DJ Dashboard") as demo:
 
-        # ── Header ────────────────────────────────────────────────────
+        # -- Header --------------------------------------------------------
         gr.HTML(
             "<h1 style='margin:0'>ACE-Step DJ Dashboard</h1>"
-            "<p style='margin:0;color:#888'>Continuous music generation with sliding-window stitching</p>"
+            "<p style='margin:0;color:#888'>Continuous music generation with repaint-based context prefill</p>"
         )
 
         with gr.Row():
@@ -157,7 +159,7 @@ def create_dj_dashboard() -> gr.Blocks:
         check_btn.click(fn=_check_health, inputs=[api_url], outputs=[health_box])
 
         with gr.Row():
-            # ── Left column: controls ─────────────────────────────────
+            # -- Left column: controls -------------------------------------
             with gr.Column(scale=1, min_width=320):
                 prompt = gr.Textbox(
                     label="Prompt / Caption",
@@ -174,13 +176,9 @@ def create_dj_dashboard() -> gr.Blocks:
                     seg_dur = gr.Slider(
                         label="Segment (s)", minimum=15, maximum=120, value=30, step=5,
                     )
-                    overlap_dur = gr.Slider(
-                        label="Overlap (s)", minimum=1, maximum=15, value=5, step=1,
+                    context_dur = gr.Slider(
+                        label="Context Prefill (s)", minimum=2, maximum=30, value=10, step=1,
                     )
-
-                xfade_dur = gr.Slider(
-                    label="Crossfade (s)", minimum=0.5, maximum=10, value=2, step=0.5,
-                )
 
                 with gr.Row():
                     bpm = gr.Number(label="BPM", value=None, precision=0)
@@ -199,7 +197,7 @@ def create_dj_dashboard() -> gr.Blocks:
                     play_btn = gr.Button("Play / Generate", variant="primary", scale=2)
                     stop_btn = gr.Button("Stop", variant="stop", scale=1)
 
-            # ── Right column: output ──────────────────────────────────
+            # -- Right column: output --------------------------------------
             with gr.Column(scale=2):
                 status_box = gr.Textbox(label="Pipeline Status", interactive=False, lines=2)
 
@@ -221,12 +219,12 @@ def create_dj_dashboard() -> gr.Blocks:
                     column_count=(5, "fixed"),
                 )
 
-        # ── Events ────────────────────────────────────────────────────
+        # -- Events --------------------------------------------------------
         play_event = play_btn.click(
             fn=_generation_loop,
             inputs=[
                 api_url, prompt, lyrics,
-                seg_dur, overlap_dur, xfade_dur,
+                seg_dur, context_dur,
                 bpm, key_scale, language,
                 steps, guidance, thinking,
             ],
