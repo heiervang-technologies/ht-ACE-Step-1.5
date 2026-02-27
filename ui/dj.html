@@ -1305,6 +1305,11 @@
             this._updateNowPlaying(target);
             this.paused = false;
             setPipelineStage('playing');
+
+            // Kick off generation of the next segment after skip
+            if (!this.generating && !this.nextReady) {
+                this._generateNext();
+            }
         }
 
         /**
@@ -1332,9 +1337,6 @@
 
                     // Gapless: next starts exactly when current ends
                     this._scheduleSegment(nextSeg, lastSeg.endTime);
-
-                    // Immediately begin generating the segment after that
-                    this._generateNext();
                 }
 
                 // Buffer underrun detection: current time has passed the end of
@@ -1347,6 +1349,12 @@
                         setPipelineStage('generating');
                     }
                 }
+            }
+
+            // Always ensure generation is running — keeps the pipeline fed.
+            // _generateNext guards against double-fire with this.generating.
+            if (!this.generating && !this.nextReady) {
+                this._generateNext();
             }
         }
 
