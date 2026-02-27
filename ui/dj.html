@@ -736,7 +736,7 @@
 
             /**
              * Each segment:
-             * { index, prompt, lyrics, serverPath, audioBuffer, metas,
+             * { index, prompt, lyrics, audioBlob, audioBuffer, metas,
              *   source, gainNode, startTime, endTime }
              */
             this.segments = [];
@@ -754,7 +754,7 @@
             this.nextReady = null;
 
             /** Server-side file path of the last generated audio (for reference chaining). */
-            this.lastRefPath = null;
+            this.lastRefBlob = null;
 
             /** ID for the lookahead scheduler interval. */
             this.schedulerInterval = null;
@@ -880,27 +880,49 @@
             setPipelineStage('generating');
 
             // --- 1. Release task ---
-            const body = {
-                prompt:              params.prompt,
-                lyrics:              params.lyrics,
-                audio_duration:      params.audio_duration,
-                task_type:           'text2music',
-                inference_steps:     params.inference_steps,
-                guidance_scale:      params.guidance_scale,
-                thinking:            params.thinking,
-                batch_size:          1,
-                audio_format:        'mp3',
-                vocal_language:      params.vocal_language,
-            };
-            if (params.bpm) body.bpm = params.bpm;
-            if (params.key_scale) body.key_scale = params.key_scale;
-            if (refPath) body.reference_audio_path = refPath;
-
-            const releaseRes = await fetch(`${apiBase}/release_task`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
+            // Use FormData when we have a reference audio blob to upload,
+            // otherwise use JSON for the first segment.
+            let releaseRes;
+            if (refPath && refPath instanceof Blob) {
+                const fd = new FormData();
+                fd.append('prompt', params.prompt);
+                fd.append('lyrics', params.lyrics);
+                fd.append('audio_duration', params.audio_duration);
+                fd.append('task_type', 'text2music');
+                fd.append('inference_steps', params.inference_steps);
+                fd.append('guidance_scale', params.guidance_scale);
+                fd.append('thinking', params.thinking);
+                fd.append('batch_size', 1);
+                fd.append('audio_format', 'mp3');
+                fd.append('vocal_language', params.vocal_language);
+                if (params.bpm) fd.append('bpm', params.bpm);
+                if (params.key_scale) fd.append('key_scale', params.key_scale);
+                fd.append('ref_audio', refPath, 'reference.mp3');
+                releaseRes = await fetch(`${apiBase}/release_task`, {
+                    method: 'POST',
+                    body: fd,
+                });
+            } else {
+                const body = {
+                    prompt:              params.prompt,
+                    lyrics:              params.lyrics,
+                    audio_duration:      params.audio_duration,
+                    task_type:           'text2music',
+                    inference_steps:     params.inference_steps,
+                    guidance_scale:      params.guidance_scale,
+                    thinking:            params.thinking,
+                    batch_size:          1,
+                    audio_format:        'mp3',
+                    vocal_language:      params.vocal_language,
+                };
+                if (params.bpm) body.bpm = params.bpm;
+                if (params.key_scale) body.key_scale = params.key_scale;
+                releaseRes = await fetch(`${apiBase}/release_task`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+            }
             const releaseData = await releaseRes.json();
 
             if (releaseData.code !== 200 || !releaseData.data || !releaseData.data.task_id) {
@@ -922,17 +944,6 @@
             const fileUrl = item.file || item.url;
             const metas = item.metas || {};
 
-            // Extract the raw server path for reference chaining
-            let serverPath = null;
-            try {
-                const fullUrl = new URL(fileUrl, apiBase);
-                serverPath = decodeURIComponent(fullUrl.searchParams.get('path'));
-            } catch (_e) {
-                // If URL parsing fails, try manual extraction
-                const match = fileUrl.match(/path=([^&]+)/);
-                if (match) serverPath = decodeURIComponent(match[1]);
-            }
-
             // --- 4. Download audio ---
             log(`[Seg #${segIndex}] Downloading audio...`, 'log-play');
             setPipelineStage('downloading');
@@ -940,7 +951,9 @@
             const audioUrl = fileUrl.startsWith('http') ? fileUrl : `${apiBase}${fileUrl}`;
             const audioRes = await fetch(audioUrl);
             if (!audioRes.ok) throw new Error(`Audio download failed: ${audioRes.status}`);
-            const arrayBuf = await audioRes.arrayBuffer();
+            // Keep the blob for reference audio upload on next segment
+            const audioBlob = await audioRes.blob();
+            const arrayBuf = await audioBlob.arrayBuffer();
 
             // --- 5. Decode ---
             log(`[Seg #${segIndex}] Decoding audio buffer...`, 'log-info');
@@ -955,7 +968,7 @@
                 index: segIndex,
                 prompt: params.prompt,
                 lyrics: params.lyrics,
-                serverPath,
+                audioBlob,
                 audioBuffer,
                 metas,
                 source: null,
@@ -1142,19 +1155,19 @@
 
         /**
          * Kick off generation of the next segment.
-         * Uses the last segment's serverPath as reference for continuity.
+         * Uses the last segment's audioBlob as reference for continuity.
          * Guards against double-fire.
          */
         async _generateNext() {
             if (!this.running || this.generating) return;
             this.generating = true;
 
-            const refPath = this.lastRefPath;
-            dom.refStatus.textContent = refPath ? refPath.split('/').pop() : 'none';
+            const refBlob = this.lastRefBlob;
+            dom.refStatus.textContent = refBlob ? `blob (${(refBlob.size/1024).toFixed(0)}KB)` : 'none';
 
             try {
-                const segment = await this._generateSegment(refPath);
-                this.lastRefPath = segment.serverPath;
+                const segment = await this._generateSegment(refBlob);
+                this.lastRefBlob = segment.audioBlob;
                 this.generating = false;
 
                 if (!this.running) return;  // Engine stopped while generating
