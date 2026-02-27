@@ -340,9 +340,13 @@
             min-width: 180px;
             max-width: 220px;
             flex-shrink: 0;
-            transition: border-color 0.3s;
+            transition: border-color 0.3s, background 0.2s;
+            cursor: pointer;
+            user-select: none;
         }
+        .seg-card:hover { background: var(--panel-bg); }
         .seg-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(29, 185, 84, 0.2); }
+        .seg-card.unavailable { opacity: 0.4; cursor: not-allowed; }
         .seg-card .seg-num { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
         .seg-card .seg-prompt {
             font-size: 0.8rem;
@@ -1221,6 +1225,68 @@
         }
 
         /**
+         * Skip playback to a specific segment by index.
+         * Stops all currently playing sources and reschedules from the
+         * target segment onward (including any subsequent buffered segments).
+         */
+        skipToSegment(targetIndex) {
+            if (!this.audioCtx || !this.running) return;
+
+            // Find the target segment
+            const target = this.segments.find(s => s.index === targetIndex);
+            if (!target) {
+                log(`Segment #${targetIndex} not in memory`, 'log-warn');
+                return;
+            }
+            if (!target.audioBuffer) {
+                log(`Segment #${targetIndex} buffer was freed`, 'log-warn');
+                return;
+            }
+
+            log(`Skipping to segment #${targetIndex}`, 'log-info');
+
+            // 1. Stop all currently playing sources
+            for (const seg of this.segments) {
+                try {
+                    if (seg.source) { seg.source.onended = null; seg.source.stop(); seg.source.disconnect(); }
+                    if (seg.gainNode) { seg.gainNode.disconnect(); }
+                } catch (_e) { /* already stopped */ }
+                seg.source = null;
+                seg.gainNode = null;
+            }
+
+            // 2. Reschedule from the target segment onward
+            const targetPos = this.segments.indexOf(target);
+            let t = this.audioCtx.currentTime + 0.05;
+
+            for (let i = targetPos; i < this.segments.length; i++) {
+                const seg = this.segments[i];
+                if (!seg.audioBuffer) break;  // no buffer = can't play further
+
+                const source = this.audioCtx.createBufferSource();
+                source.buffer = seg.audioBuffer;
+                const gainNode = this.audioCtx.createGain();
+                source.connect(gainNode);
+                gainNode.connect(this.masterGain);
+                gainNode.gain.setValueAtTime(1, t);
+                source.start(t);
+
+                seg.source = source;
+                seg.gainNode = gainNode;
+                seg.startTime = t;
+                seg.endTime = t + seg.audioBuffer.duration;
+                t = seg.endTime;
+
+                source.onended = () => this._cleanupOldSegments();
+            }
+
+            this.currentIndex = targetPos;
+            this._updateNowPlaying(target);
+            this.paused = false;
+            setPipelineStage('playing');
+        }
+
+        /**
          * The lookahead scheduler — runs every 200ms.
          * Checks if the currently playing segment is approaching its end,
          * and if so, schedules the next segment gaplessly at the end time.
@@ -1341,12 +1407,17 @@
 
         /**
          * Release AudioBuffer references for segments that have finished playing,
-         * keeping only the last 5 to limit memory usage.
+         * keeping the last 20 segments' audio data for skip-back support.
+         * Older segments stay in the array (for timeline display) but lose their buffers.
          */
         _cleanupOldSegments() {
-            const keep = 5;
-            while (this.segments.length > keep) {
-                const old = this.segments.shift();
+            const keep = 20;
+            if (this.segments.length <= keep) return;
+
+            const cutoff = this.segments.length - keep;
+            for (let i = 0; i < cutoff; i++) {
+                const old = this.segments[i];
+                if (!old.audioBuffer) continue;  // already cleaned
                 // Disconnect nodes
                 try {
                     if (old.source) { old.source.disconnect(); }
@@ -1356,9 +1427,11 @@
                 old.playableBuffer = null;
                 old.source = null;
                 old.gainNode = null;
+
+                // Mark timeline card as unavailable
+                const card = dom.timeline.querySelector(`[data-seg="${old.index}"]`);
+                if (card) card.classList.add('unavailable');
             }
-            // Update currentIndex to reflect the shift
-            this.currentIndex = this.segments.length - 1;
         }
 
         // ============================================================
@@ -1390,6 +1463,15 @@
                 dom.npTime.textContent = `${fmtTime(elapsed)} / ${fmtTime(total)}`;
                 dom.npSegNum.textContent = '#' + playing.index;
                 dom.nowPlaying.classList.remove('idle');
+
+                // Highlight the currently playing card in the timeline
+                const activeCard = dom.timeline.querySelector('.seg-card.active');
+                const expectedIdx = String(playing.index);
+                if (!activeCard || activeCard.dataset.seg !== expectedIdx) {
+                    dom.timeline.querySelectorAll('.seg-card').forEach(c => c.classList.remove('active'));
+                    const card = dom.timeline.querySelector(`[data-seg="${playing.index}"]`);
+                    if (card) card.classList.add('active');
+                }
 
                 // Update footer
                 dom.totalSegments.textContent = this.segCounter;
@@ -1456,6 +1538,8 @@
                 <div class="seg-dur">${dur}s</div>
                 <div class="seg-meta">BPM ${metas.bpm || '?'} / ${metas.keyscale || '?'}</div>
             `;
+
+            card.addEventListener('click', () => this.skipToSegment(segment.index));
 
             dom.timeline.appendChild(card);
             card.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
