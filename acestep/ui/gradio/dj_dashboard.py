@@ -67,6 +67,8 @@ async def _generation_loop(
     lyrics: str,
     seg_dur: float,
     context_dur: float,
+    end_guard: float,
+    weirdness: float,
     bpm: float | None,
     key: str,
     lang: str,
@@ -79,6 +81,8 @@ async def _generation_loop(
         api_base=api_url.rstrip("/"),
         segment_duration=seg_dur,
         context_duration=context_dur,
+        end_guard=end_guard,
+        weirdness=weirdness / 100.0,  # UI is 0-100%, config is 0.0-1.0
         inference_steps=int(steps),
         guidance_scale=guidance,
         thinking=thinking,
@@ -96,7 +100,7 @@ async def _generation_loop(
         is_repaint = seg_num > 1
         status = f"Generating segment {seg_num}..."
         if is_repaint:
-            status += f" (repaint: {context_dur}s context from seg {seg_num - 1})"
+            status += f" (repaint: {context_dur}s context, {end_guard}s end guard, {weirdness:.0f}% weirdness)"
         yield (None, _audio_for_gradio(stitcher.accumulated_audio), status, rows)
 
         try:
@@ -181,6 +185,16 @@ def create_dj_dashboard() -> gr.Blocks:
                     )
 
                 with gr.Row():
+                    end_guard = gr.Slider(
+                        label="End Guard (s)", minimum=0, maximum=30, value=10, step=1,
+                        info="Extra tail discarded to prevent song endings",
+                    )
+                    weirdness = gr.Slider(
+                        label="Weirdness %", minimum=0, maximum=100, value=30, step=5,
+                        info="Creative drift from context (0=faithful, 100=wild)",
+                    )
+
+                with gr.Row():
                     bpm = gr.Number(label="BPM", value=None, precision=0)
                     key_scale = gr.Dropdown(label="Key", choices=KEYS, value="")
                     language = gr.Dropdown(label="Language", choices=LANGUAGES, value="en")
@@ -224,7 +238,7 @@ def create_dj_dashboard() -> gr.Blocks:
             fn=_generation_loop,
             inputs=[
                 api_url, prompt, lyrics,
-                seg_dur, context_dur,
+                seg_dur, context_dur, end_guard, weirdness,
                 bpm, key_scale, language,
                 steps, guidance, thinking,
             ],

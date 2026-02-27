@@ -476,6 +476,14 @@
             </div>
         </div>
 
+        <div class="control-group">
+            <label>End Guard (s) — extra tail discarded to prevent song endings</label>
+            <div class="range-row">
+                <input type="range" id="endGuard" min="0" max="30" step="1" value="10">
+                <span class="range-val" id="endGuardVal">10</span>
+            </div>
+        </div>
+
         <div class="row-2">
             <div class="control-group">
                 <label for="bpm">BPM (optional)</label>
@@ -530,6 +538,14 @@
             <div class="range-row">
                 <input type="range" id="cfgScale" min="1" max="15" step="0.5" value="7">
                 <span class="range-val" id="cfgScaleVal">7.0</span>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>Weirdness — lower = faithful continuation, higher = creative drift</label>
+            <div class="range-row">
+                <input type="range" id="weirdness" min="0" max="100" step="5" value="30">
+                <span class="range-val" id="weirdnessVal">30%</span>
             </div>
         </div>
 
@@ -622,6 +638,10 @@
         segDurationVal: $('segDurationVal'),
         contextDuration:  $('contextDuration'),
         contextDurationVal: $('contextDurationVal'),
+        endGuard:         $('endGuard'),
+        endGuardVal:      $('endGuardVal'),
+        weirdness:        $('weirdness'),
+        weirdnessVal:     $('weirdnessVal'),
         bpm:            $('bpm'),
         keyScale:       $('keyScale'),
         vocalLanguage:  $('vocalLanguage'),
@@ -656,6 +676,8 @@
     }
     wireSlider(dom.segDuration,   dom.segDurationVal,   v => v);
     wireSlider(dom.contextDuration, dom.contextDurationVal, v => v);
+    wireSlider(dom.endGuard,     dom.endGuardVal,      v => v);
+    wireSlider(dom.weirdness,   dom.weirdnessVal,     v => v + '%');
     wireSlider(dom.infSteps,      dom.infStepsVal,      v => v);
     wireSlider(dom.cfgScale,      dom.cfgScaleVal,      v => parseFloat(v).toFixed(1));
     wireSlider(dom.masterVolume,  dom.volumeVal,        v => v + '%');
@@ -754,10 +776,10 @@
             this.nextReady = null;
 
             /**
-             * AudioBuffer of the last generated segment (full, before trimming).
-             * Used to extract the tail as context prefill for repaint.
+             * AudioBuffer of the last segment's playable region (context + playback,
+             * excluding end guard). Used to extract the tail as context prefill.
              */
-            this.lastFullBuffer = null;
+            this.lastPlayableBuffer = null;
 
             /** ID for the lookahead scheduler interval. */
             this.schedulerInterval = null;
@@ -932,9 +954,17 @@
             const segIndex = this.segCounter++;
             const apiBase = getApiBase();
             const isRepaint = ctxBlob !== null;
-            const totalDur = isRepaint ? contextDur + params.audio_duration : params.audio_duration;
+            const endGuard = parseInt(dom.endGuard.value, 10);
+            // Weirdness 0-100% → audio_cover_strength 0.0-1.0
+            // Lower cover_strength = model deviates more from the context
+            const weirdness = parseInt(dom.weirdness.value, 10) / 100;
+            const coverStrength = 1.0 - weirdness;
 
-            log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s new = ${totalDur}s total)...`, 'log-gen');
+            // Total audio duration includes end guard buffer (discarded to prevent endings)
+            const genDur = params.audio_duration + endGuard;
+            const totalDur = isRepaint ? contextDur + genDur : genDur;
+
+            log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s play + ${endGuard}s guard = ${totalDur}s total, weird=${(weirdness*100).toFixed(0)}%)`, 'log-gen');
             setPipelineStage('generating');
 
             // --- 1. Release task ---
@@ -948,11 +978,12 @@
                 fd.append('task_type', 'repaint');
                 fd.append('repainting_start', contextDur);
                 fd.append('repainting_end', totalDur);
+                fd.append('audio_cover_strength', coverStrength);
                 fd.append('inference_steps', params.inference_steps);
                 fd.append('guidance_scale', params.guidance_scale);
                 fd.append('thinking', params.thinking);
                 fd.append('batch_size', 1);
-                fd.append('audio_format', 'wav');  // WAV for lossless context preservation
+                fd.append('audio_format', 'wav');
                 fd.append('vocal_language', params.vocal_language);
                 if (params.bpm) fd.append('bpm', params.bpm);
                 if (params.key_scale) fd.append('key_scale', params.key_scale);
@@ -962,11 +993,11 @@
                     body: fd,
                 });
             } else {
-                // First segment: text2music, no context
+                // First segment: text2music (with end guard for longer gen)
                 const body = {
                     prompt:              params.prompt,
                     lyrics:              params.lyrics,
-                    audio_duration:      params.audio_duration,
+                    audio_duration:      totalDur,
                     task_type:           'text2music',
                     inference_steps:     params.inference_steps,
                     guidance_scale:      params.guidance_scale,
@@ -1019,24 +1050,43 @@
 
             const fullBuffer = await this.audioCtx.decodeAudioData(arrayBuf);
 
-            // --- 6. Trim context prefix for playback ---
-            // For repaint segments, the first contextDur seconds are the prefilled
-            // context (kept as ground truth by the diffusion mask). We only play
-            // the newly generated portion.
+            // --- 6. Trim: remove context prefix + end guard tail ---
+            // Context prefix: kept as ground truth by diffusion mask (repaint only)
+            // End guard tail: discarded to prevent the model's natural song ending
+            const sr = fullBuffer.sampleRate;
+            const trimStart = isRepaint ? Math.round(contextDur * sr) : 0;
+            const trimEnd = endGuard > 0 ? Math.round(endGuard * sr) : 0;
+            const playFrames = fullBuffer.length - trimStart - trimEnd;
+
             let playbackBuffer = fullBuffer;
-            if (isRepaint) {
-                const sr = fullBuffer.sampleRate;
-                const trimFrames = Math.round(contextDur * sr);
-                const newFrames = fullBuffer.length - trimFrames;
-                if (newFrames > 0) {
-                    playbackBuffer = this.audioCtx.createBuffer(
-                        fullBuffer.numberOfChannels, newFrames, sr
+            if (playFrames > 0 && (trimStart > 0 || trimEnd > 0)) {
+                playbackBuffer = this.audioCtx.createBuffer(
+                    fullBuffer.numberOfChannels, playFrames, sr
+                );
+                for (let ch = 0; ch < fullBuffer.numberOfChannels; ch++) {
+                    const src = fullBuffer.getChannelData(ch);
+                    playbackBuffer.copyToChannel(src.subarray(trimStart, trimStart + playFrames), ch);
+                }
+                const parts = [];
+                if (trimStart > 0) parts.push(`${contextDur}s ctx`);
+                if (trimEnd > 0) parts.push(`${endGuard}s guard`);
+                log(`[Seg #${segIndex}] Trimmed ${parts.join(' + ')} → ${(playFrames / sr).toFixed(1)}s playback`, 'log-info');
+            }
+
+            // Also create a "playable" buffer: full minus end guard (but keeping context).
+            // This is what we extract the next context tail from.
+            let playableBuffer = fullBuffer;
+            if (trimEnd > 0) {
+                const playableFrames = fullBuffer.length - trimEnd;
+                if (playableFrames > 0) {
+                    playableBuffer = this.audioCtx.createBuffer(
+                        fullBuffer.numberOfChannels, playableFrames, sr
                     );
                     for (let ch = 0; ch < fullBuffer.numberOfChannels; ch++) {
-                        const src = fullBuffer.getChannelData(ch);
-                        playbackBuffer.copyToChannel(src.subarray(trimFrames), ch);
+                        playableBuffer.copyToChannel(
+                            fullBuffer.getChannelData(ch).subarray(0, playableFrames), ch
+                        );
                     }
-                    log(`[Seg #${segIndex}] Trimmed ${contextDur}s context → ${(newFrames / sr).toFixed(1)}s playback`, 'log-info');
                 }
             }
 
@@ -1047,7 +1097,7 @@
                 index: segIndex,
                 prompt: params.prompt,
                 lyrics: params.lyrics,
-                fullBuffer,      // Full output including context (for extracting next tail)
+                playableBuffer,  // Full minus end guard (for extracting next context)
                 audioBuffer: playbackBuffer,  // Trimmed buffer for playback
                 metas,
                 source: null,
@@ -1235,9 +1285,10 @@
             const contextDur = parseInt(dom.contextDuration.value, 10);
             let ctxBlob = null;
 
-            // If we have a previous full buffer, extract its tail as context
-            if (this.lastFullBuffer) {
-                ctxBlob = this._extractTailAsWav(this.lastFullBuffer, contextDur);
+            // If we have a previous playable buffer, extract its tail as context
+            // (excludes end guard so we don't use the discarded ending as context)
+            if (this.lastPlayableBuffer) {
+                ctxBlob = this._extractTailAsWav(this.lastPlayableBuffer, contextDur);
                 dom.refStatus.textContent = `ctx ${contextDur}s (${(ctxBlob.size/1024).toFixed(0)}KB)`;
             } else {
                 dom.refStatus.textContent = 'none (first segment)';
@@ -1245,7 +1296,7 @@
 
             try {
                 const segment = await this._generateSegment(ctxBlob, contextDur);
-                this.lastFullBuffer = segment.fullBuffer;
+                this.lastPlayableBuffer = segment.playableBuffer;
                 this.generating = false;
 
                 if (!this.running) return;  // Engine stopped while generating
@@ -1302,7 +1353,7 @@
                     if (old.gainNode) { old.gainNode.disconnect(); }
                 } catch (_e) { /* already disconnected */ }
                 old.audioBuffer = null;
-                old.fullBuffer = null;
+                old.playableBuffer = null;
                 old.source = null;
                 old.gainNode = null;
             }

@@ -14,7 +14,6 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import quote
 
 import httpx
 import numpy as np
@@ -30,6 +29,8 @@ class DJConfig:
     api_base: str = "http://127.0.0.1:8001"
     segment_duration: float = 30.0
     context_duration: float = 10.0
+    end_guard: float = 10.0
+    weirdness: float = 0.3
     inference_steps: int = 8
     guidance_scale: float = 7.0
     thinking: bool = False
@@ -91,36 +92,43 @@ class DJStitcher:
         First segment: text2music (no context).
         Subsequent: repaint with tail of previous segment as audio context.
         The model outpaints beyond the context, producing seamless continuation.
+
+        End guard: extra audio generated at the tail (then discarded) so the
+        model's natural song ending falls outside the playback window.
         """
         prompt = self._current_prompt
         lyrics = self._current_lyrics
+        end_guard = self.config.end_guard
 
-        # Extract context from previous segment
+        # Extract context from previous segment's *playback* audio
+        # (excludes end guard so we don't use discarded ending as context)
         ctx_audio = None
         context_dur = self.config.context_duration
         if self.segments:
-            prev_full = self.segments[-1].full_audio
+            prev_playback = self.segments[-1].playback_audio
             ctx_samples = min(
                 int(context_dur * self.SAMPLE_RATE),
-                prev_full.shape[-1],
+                prev_playback.shape[-1],
             )
-            ctx_audio = prev_full[:, -ctx_samples:]
+            ctx_audio = prev_playback[:, -ctx_samples:]
 
         task_id = await self.submit_segment(prompt, lyrics, ctx_audio, context_dur)
         result = await self.poll_segment(task_id)
         full_audio, sr = await self.download_audio(result["file_url"])
 
-        # Trim context prefix for playback
-        if ctx_audio is not None:
-            trim_samples = int(context_dur * sr)
-            playback_audio = full_audio[:, trim_samples:]
-            logger.info(
-                "Trimmed %0.1fs context → %0.1fs playback",
-                context_dur,
-                playback_audio.shape[-1] / sr,
-            )
-        else:
-            playback_audio = full_audio
+        # Trim context prefix and end guard tail for playback
+        trim_start = int(context_dur * sr) if ctx_audio is not None else 0
+        trim_end = int(end_guard * sr) if end_guard > 0 else 0
+        total_samples = full_audio.shape[-1]
+        play_end = max(total_samples - trim_end, trim_start + sr)  # at least 1s
+        playback_audio = full_audio[:, trim_start:play_end]
+
+        logger.info(
+            "Trimmed %0.1fs prefix + %0.1fs end guard → %0.1fs playback",
+            trim_start / sr,
+            trim_end / sr,
+            playback_audio.shape[-1] / sr,
+        )
 
         segment = DJSegment(
             index=len(self.segments),
@@ -170,9 +178,14 @@ class DJStitcher:
         """
         url = f"{self.config.api_base}/release_task"
 
+        # Generation duration includes end guard so the model's natural
+        # ending falls in the discarded tail, not the playback region.
+        gen_dur = self.config.segment_duration + self.config.end_guard
+        cover_strength = max(0.0, min(1.0, 1.0 - self.config.weirdness))
+
         if ctx_audio is not None:
             # Repaint mode: upload context as ctx_audio
-            total_dur = context_dur + self.config.segment_duration
+            total_dur = context_dur + gen_dur
             wav_bytes = self._encode_wav(ctx_audio)
             files = {"ctx_audio": ("context.wav", wav_bytes, "audio/wav")}
             data = {
@@ -182,6 +195,7 @@ class DJStitcher:
                 "task_type": "repaint",
                 "repainting_start": str(context_dur),
                 "repainting_end": str(total_dur),
+                "audio_cover_strength": str(cover_strength),
                 "inference_steps": str(self.config.inference_steps),
                 "guidance_scale": str(self.config.guidance_scale),
                 "thinking": str(self.config.thinking).lower(),
@@ -203,7 +217,7 @@ class DJStitcher:
             body: dict = {
                 "prompt": prompt,
                 "lyrics": lyrics or "[inst]",
-                "audio_duration": self.config.segment_duration,
+                "audio_duration": gen_dur,
                 "task_type": "text2music",
                 "inference_steps": self.config.inference_steps,
                 "guidance_scale": self.config.guidance_scale,
