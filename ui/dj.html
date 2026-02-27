@@ -347,6 +347,16 @@
         .seg-card:hover { background: var(--panel-bg); }
         .seg-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(29, 185, 84, 0.2); }
         .seg-card.unavailable { opacity: 0.4; cursor: not-allowed; }
+        .seg-card.generating {
+            opacity: 0.6;
+            border-color: var(--purple);
+            cursor: default;
+            animation: seg-pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes seg-pulse {
+            0%, 100% { box-shadow: 0 0 6px rgba(179, 136, 255, 0.2); }
+            50% { box-shadow: 0 0 18px rgba(179, 136, 255, 0.5); }
+        }
         .seg-card .seg-num { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
         .seg-card .seg-prompt {
             font-size: 0.8rem;
@@ -1110,8 +1120,8 @@
                 endTime: 0,
             };
 
-            // Add timeline card
-            this._addTimelineCard(segment);
+            // Update the generating placeholder card with real data
+            this._finalizeTimelineCard(segment);
             this._updateFooter();
 
             return segment;
@@ -1232,10 +1242,15 @@
         skipToSegment(targetIndex) {
             if (!this.audioCtx || !this.running) return;
 
-            // Find the target segment
-            const target = this.segments.find(s => s.index === targetIndex);
+            // Find the target in scheduled segments or in the next-ready buffer
+            let target = this.segments.find(s => s.index === targetIndex);
+            let fromNextReady = false;
+            if (!target && this.nextReady && this.nextReady.index === targetIndex) {
+                target = this.nextReady;
+                fromNextReady = true;
+            }
             if (!target) {
-                log(`Segment #${targetIndex} not in memory`, 'log-warn');
+                log(`Segment #${targetIndex} still generating...`, 'log-warn');
                 return;
             }
             if (!target.audioBuffer) {
@@ -1253,6 +1268,12 @@
                 } catch (_e) { /* already stopped */ }
                 seg.source = null;
                 seg.gainNode = null;
+            }
+
+            // If target was in nextReady, move it into segments
+            if (fromNextReady) {
+                this.segments.push(target);
+                this.nextReady = null;
             }
 
             // 2. Reschedule from the target segment onward
@@ -1360,6 +1381,10 @@
                 dom.refStatus.textContent = 'none (first segment)';
             }
 
+            // Show generating placeholder in timeline
+            const pendingIndex = this.segCounter;
+            this._addGeneratingCard(pendingIndex);
+
             try {
                 const segment = await this._generateSegment(ctxBlob, contextDur);
                 this.lastPlayableBuffer = segment.playableBuffer;
@@ -1388,6 +1413,11 @@
                 }
             } catch (err) {
                 this.generating = false;
+
+                // Remove the generating placeholder card
+                const failedCard = dom.timeline.querySelector(`[data-seg="${pendingIndex}"]`);
+                if (failedCard) failedCard.remove();
+
                 if (!this.running) return;
 
                 log(`Generation error: ${err.message}`, 'log-error');
@@ -1523,10 +1553,38 @@
         // Timeline Cards
         // ============================================================
 
-        _addTimelineCard(segment) {
+        /**
+         * Add a glowing placeholder card while a segment is being generated.
+         */
+        _addGeneratingCard(segIndex) {
             const card = document.createElement('div');
-            card.className = 'seg-card';
-            card.dataset.seg = segment.index;
+            card.className = 'seg-card generating';
+            card.dataset.seg = segIndex;
+
+            const prompt = dom.prompt.value || '(empty)';
+            const snippet = prompt.length > 40 ? prompt.slice(0, 40) + '...' : prompt;
+
+            card.innerHTML = `
+                <div class="seg-num">Segment #${segIndex}</div>
+                <div class="seg-prompt">${this._escHtml(snippet)}</div>
+                <div class="seg-dur">generating...</div>
+                <div class="seg-meta">&nbsp;</div>
+            `;
+
+            card.addEventListener('click', () => this.skipToSegment(segIndex));
+
+            dom.timeline.appendChild(card);
+            card.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+        }
+
+        /**
+         * Update the generating placeholder card with actual segment data.
+         */
+        _finalizeTimelineCard(segment) {
+            const card = dom.timeline.querySelector(`[data-seg="${segment.index}"]`);
+            if (!card) return;
+
+            card.classList.remove('generating');
 
             const promptSnippet = segment.prompt.length > 40 ? segment.prompt.slice(0, 40) + '...' : (segment.prompt || '(empty)');
             const dur = segment.audioBuffer ? segment.audioBuffer.duration.toFixed(1) : '?';
@@ -1538,11 +1596,6 @@
                 <div class="seg-dur">${dur}s</div>
                 <div class="seg-meta">BPM ${metas.bpm || '?'} / ${metas.keyscale || '?'}</div>
             `;
-
-            card.addEventListener('click', () => this.skipToSegment(segment.index));
-
-            dom.timeline.appendChild(card);
-            card.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
         }
 
         _escHtml(str) {
