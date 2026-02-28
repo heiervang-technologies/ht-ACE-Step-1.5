@@ -316,57 +316,76 @@
             display: block;
         }
 
-        /* --- Segment Timeline --- */
-        .timeline-section h3 {
-            font-size: 0.85rem;
-            color: var(--muted);
-            margin-bottom: 8px;
-        }
-        .timeline-scroll {
-            display: flex;
-            gap: 10px;
-            overflow-x: auto;
-            padding-bottom: 8px;
-        }
-        .timeline-scroll::-webkit-scrollbar { height: 6px; }
-        .timeline-scroll::-webkit-scrollbar-track { background: #111; border-radius: 3px; }
-        .timeline-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-
-        .seg-card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 10px 14px;
-            min-width: 180px;
-            max-width: 220px;
+        /* --- Waveform Timeline Bar --- */
+        .waveform-section {
             flex-shrink: 0;
-            transition: border-color 0.3s, background 0.2s;
+        }
+        .waveform-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+        .live-badge {
+            font-size: 0.65rem;
+            font-weight: 800;
+            padding: 2px 8px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
             cursor: pointer;
+            transition: all 0.3s;
             user-select: none;
         }
-        .seg-card:hover { background: var(--panel-bg); }
-        .seg-card.active { border-color: var(--accent); box-shadow: 0 0 12px rgba(29, 185, 84, 0.2); }
-        .seg-card.unavailable { opacity: 0.4; cursor: not-allowed; }
-        .seg-card.generating {
-            opacity: 0.6;
-            border-color: var(--purple);
-            cursor: default;
-            animation: seg-pulse 1.5s ease-in-out infinite;
+        .live-badge.live {
+            background: var(--danger);
+            color: white;
+            animation: live-pulse 1.5s ease-in-out infinite;
         }
-        @keyframes seg-pulse {
-            0%, 100% { box-shadow: 0 0 6px rgba(179, 136, 255, 0.2); }
-            50% { box-shadow: 0 0 18px rgba(179, 136, 255, 0.5); }
+        .live-badge.behind {
+            background: #444;
+            color: #999;
+            animation: none;
         }
-        .seg-card .seg-num { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-        .seg-card .seg-prompt {
+        @keyframes live-pulse {
+            0%, 100% { box-shadow: 0 0 4px rgba(255, 68, 68, 0.4); }
+            50% { box-shadow: 0 0 12px rgba(255, 68, 68, 0.7); }
+        }
+        .waveform-time {
+            font-family: monospace;
             font-size: 0.8rem;
-            margin-top: 3px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            color: var(--accent);
         }
-        .seg-card .seg-dur { font-size: 0.7rem; color: var(--accent); margin-top: 4px; font-family: monospace; }
-        .seg-card .seg-meta { font-size: 0.65rem; color: #666; margin-top: 2px; }
+        .waveform-container {
+            position: relative;
+            background: #0a0a0a;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        #waveformCanvas {
+            width: 100%;
+            height: 80px;
+            display: block;
+        }
+        .waveform-tooltip {
+            position: absolute;
+            top: -32px;
+            left: 0;
+            background: rgba(20, 20, 20, 0.95);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 0.7rem;
+            color: var(--text);
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 5;
+        }
+        .waveform-tooltip.visible { opacity: 1; }
 
         /* --- Log Console --- */
         .log-console {
@@ -542,7 +561,7 @@
         <div class="control-group">
             <label>Inference Steps</label>
             <div class="range-row">
-                <input type="range" id="infSteps" min="1" max="100" value="8">
+                <input type="range" id="infSteps" min="1" max="100" value="50">
                 <span class="range-val" id="infStepsVal">8</span>
             </div>
         </div>
@@ -607,10 +626,16 @@
             <canvas id="visualizer"></canvas>
         </div>
 
-        <!-- Segment Timeline -->
-        <div class="timeline-section">
-            <h3>Segment Timeline</h3>
-            <div class="timeline-scroll" id="timeline"></div>
+        <!-- Waveform Timeline Bar -->
+        <div class="waveform-section">
+            <div class="waveform-header">
+                <span class="live-badge live" id="liveBadge">LIVE</span>
+                <span class="waveform-time" id="waveformTime">0:00</span>
+            </div>
+            <div class="waveform-container" id="waveformContainer">
+                <canvas id="waveformCanvas"></canvas>
+                <div class="waveform-tooltip" id="waveformTooltip"></div>
+            </div>
         </div>
 
         <!-- Log Console -->
@@ -671,7 +696,11 @@
         npSegNum:       $('npSegNum'),
         pipelineBadges: $('pipelineBadges'),
         visualizer:     $('visualizer'),
-        timeline:       $('timeline'),
+        waveformCanvas:    $('waveformCanvas'),
+        waveformContainer: $('waveformContainer'),
+        waveformTooltip:   $('waveformTooltip'),
+        liveBadge:         $('liveBadge'),
+        waveformTime:      $('waveformTime'),
         logConsole:     $('logConsole'),
         ctxDot:         $('ctxDot'),
         ctxState:       $('ctxState'),
@@ -812,6 +841,21 @@
 
             /** Has the user triggered buffer underrun pause? */
             this.paused = false;
+
+            /** Waveform peaks cache: segIndex → Float32Array (100 peaks/sec) */
+            this.waveformPeaks = new Map();
+
+            /** Canvas 2D context for the waveform bar */
+            this.waveformCtx = null;
+
+            /** Whether playback is at the live edge (latest segment) */
+            this.isAtLiveEdge = true;
+
+            /** Segment currently being generated (index + expected duration) */
+            this.generatingPlaceholder = null;
+
+            /** Waveform animation frame id */
+            this.waveformAFId = null;
         }
 
         // ============================================================
@@ -856,6 +900,9 @@
             // Start visualizer
             this._startVisualizer();
 
+            // Start waveform bar
+            this._initWaveform();
+
             // Start lookahead scheduler
             this._startScheduler();
 
@@ -888,6 +935,11 @@
             if (this.visAFId) {
                 cancelAnimationFrame(this.visAFId);
                 this.visAFId = null;
+            }
+            // Stop waveform
+            if (this.waveformAFId) {
+                cancelAnimationFrame(this.waveformAFId);
+                this.waveformAFId = null;
             }
 
             // Let currently playing source finish naturally (it will stop on its own).
@@ -1120,8 +1172,9 @@
                 endTime: 0,
             };
 
-            // Update the generating placeholder card with real data
-            this._finalizeTimelineCard(segment);
+            // Compute waveform peaks for the timeline bar
+            this.waveformPeaks.set(segIndex, this._computePeaks(playbackBuffer));
+            this.generatingPlaceholder = null;
             this._updateFooter();
 
             return segment;
@@ -1230,16 +1283,20 @@
             log(`[Seg #${segment.index}] Scheduled at t=${startTime.toFixed(2)} (dur=${dur.toFixed(1)}s)`, 'log-play');
             setPipelineStage('playing');
             this._updateNowPlaying(segment);
+            this.isAtLiveEdge = true;
 
             return { startTime, endTime };
         }
 
         /**
-         * Skip playback to a specific segment by index.
+         * Skip playback to a specific segment by index, optionally starting
+         * at an offset within the segment (for mid-segment seeking).
          * Stops all currently playing sources and reschedules from the
          * target segment onward (including any subsequent buffered segments).
+         * @param {number} targetIndex  Segment index to skip to.
+         * @param {number} offset       Seconds into the target segment (default 0).
          */
-        skipToSegment(targetIndex) {
+        skipToSegment(targetIndex, offset = 0) {
             if (!this.audioCtx || !this.running) return;
 
             // Find the target in scheduled segments or in the next-ready buffer
@@ -1258,7 +1315,11 @@
                 return;
             }
 
-            log(`Skipping to segment #${targetIndex}`, 'log-info');
+            // Clamp offset
+            const maxOff = target.audioBuffer.duration - 0.1;
+            offset = Math.max(0, Math.min(offset, maxOff));
+
+            log(`Skipping to segment #${targetIndex}${offset > 0 ? ` +${offset.toFixed(1)}s` : ''}`, 'log-info');
 
             // 1. Stop all currently playing sources
             for (const seg of this.segments) {
@@ -1284,18 +1345,21 @@
                 const seg = this.segments[i];
                 if (!seg.audioBuffer) break;  // no buffer = can't play further
 
+                const segOffset = (i === targetPos) ? offset : 0;
+                const dur = seg.audioBuffer.duration - segOffset;
+
                 const source = this.audioCtx.createBufferSource();
                 source.buffer = seg.audioBuffer;
                 const gainNode = this.audioCtx.createGain();
                 source.connect(gainNode);
                 gainNode.connect(this.masterGain);
                 gainNode.gain.setValueAtTime(1, t);
-                source.start(t);
+                source.start(t, segOffset);
 
                 seg.source = source;
                 seg.gainNode = gainNode;
-                seg.startTime = t;
-                seg.endTime = t + seg.audioBuffer.duration;
+                seg.startTime = t - segOffset;  // virtual start so elapsed calc works
+                seg.endTime = t + dur;
                 t = seg.endTime;
 
                 source.onended = () => this._cleanupOldSegments();
@@ -1304,6 +1368,7 @@
             this.currentIndex = targetPos;
             this._updateNowPlaying(target);
             this.paused = false;
+            this.isAtLiveEdge = false;  // User seeked — not at live edge
             setPipelineStage('playing');
 
             // Kick off generation of the next segment after skip
@@ -1389,9 +1454,10 @@
                 dom.refStatus.textContent = 'none (first segment)';
             }
 
-            // Show generating placeholder in timeline
+            // Show generating placeholder in waveform
             const pendingIndex = this.segCounter;
-            this._addGeneratingCard(pendingIndex);
+            const expectedDur = parseInt(dom.segDuration.value, 10);
+            this.generatingPlaceholder = { index: pendingIndex, duration: expectedDur };
 
             try {
                 const segment = await this._generateSegment(ctxBlob, contextDur);
@@ -1422,9 +1488,8 @@
             } catch (err) {
                 this.generating = false;
 
-                // Remove the generating placeholder card
-                const failedCard = dom.timeline.querySelector(`[data-seg="${pendingIndex}"]`);
-                if (failedCard) failedCard.remove();
+                // Clear the generating placeholder
+                this.generatingPlaceholder = null;
 
                 if (!this.running) return;
 
@@ -1465,10 +1530,7 @@
                 old.playableBuffer = null;
                 old.source = null;
                 old.gainNode = null;
-
-                // Mark timeline card as unavailable
-                const card = dom.timeline.querySelector(`[data-seg="${old.index}"]`);
-                if (card) card.classList.add('unavailable');
+                // Peaks are kept in waveformPeaks map for visual display
             }
         }
 
@@ -1502,14 +1564,12 @@
                 dom.npSegNum.textContent = '#' + playing.index;
                 dom.nowPlaying.classList.remove('idle');
 
-                // Highlight the currently playing card in the timeline
-                const activeCard = dom.timeline.querySelector('.seg-card.active');
-                const expectedIdx = String(playing.index);
-                if (!activeCard || activeCard.dataset.seg !== expectedIdx) {
-                    dom.timeline.querySelectorAll('.seg-card').forEach(c => c.classList.remove('active'));
-                    const card = dom.timeline.querySelector(`[data-seg="${playing.index}"]`);
-                    if (card) card.classList.add('active');
-                }
+                // Update waveform time display
+                const totalElapsed = this._getAccumulatedPlayPos();
+                dom.waveformTime.textContent = fmtTime(totalElapsed);
+
+                // Update LIVE badge state
+                this._updateLiveBadge();
 
                 // Update footer
                 dom.totalSegments.textContent = this.segCounter;
@@ -1524,15 +1584,6 @@
             dom.npTitle.textContent = display || '(no prompt)';
             dom.npSegNum.textContent = '#' + segment.index;
             dom.nowPlaying.classList.remove('idle');
-
-            // Scroll timeline to the latest card
-            const cards = dom.timeline.querySelectorAll('.seg-card');
-            cards.forEach(c => c.classList.remove('active'));
-            const activeCard = dom.timeline.querySelector(`[data-seg="${segment.index}"]`);
-            if (activeCard) {
-                activeCard.classList.add('active');
-                activeCard.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
-            }
         }
 
         _updateCtxFooter() {
@@ -1558,52 +1609,403 @@
         }
 
         // ============================================================
-        // Timeline Cards
+        // Waveform Timeline Bar
         // ============================================================
 
         /**
-         * Add a glowing placeholder card while a segment is being generated.
+         * Compute waveform peaks from an AudioBuffer at 100 peaks/sec.
+         * Takes max(abs(samples)) across all channels per time bucket.
          */
-        _addGeneratingCard(segIndex) {
-            const card = document.createElement('div');
-            card.className = 'seg-card generating';
-            card.dataset.seg = segIndex;
+        _computePeaks(buffer) {
+            const peaksPerSec = 100;
+            const sr = buffer.sampleRate;
+            const samplesPerPeak = Math.floor(sr / peaksPerSec);
+            const totalPeaks = Math.ceil(buffer.length / samplesPerPeak);
+            const peaks = new Float32Array(totalPeaks);
 
-            const prompt = dom.prompt.value || '(empty)';
-            const snippet = prompt.length > 40 ? prompt.slice(0, 40) + '...' : prompt;
+            for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+                const data = buffer.getChannelData(ch);
+                for (let p = 0; p < totalPeaks; p++) {
+                    const start = p * samplesPerPeak;
+                    const end = Math.min(start + samplesPerPeak, data.length);
+                    let max = peaks[p];
+                    for (let i = start; i < end; i++) {
+                        const v = Math.abs(data[i]);
+                        if (v > max) max = v;
+                    }
+                    peaks[p] = max;
+                }
+            }
+            return peaks;
+        }
 
-            card.innerHTML = `
-                <div class="seg-num">Segment #${segIndex}</div>
-                <div class="seg-prompt">${this._escHtml(snippet)}</div>
-                <div class="seg-dur">generating...</div>
-                <div class="seg-meta">&nbsp;</div>
-            `;
+        /** Initialize waveform canvas, context, and event listeners. */
+        _initWaveform() {
+            this.waveformCtx = dom.waveformCanvas.getContext('2d');
+            this._resizeWaveformCanvas();
 
-            card.addEventListener('click', () => this.skipToSegment(segIndex));
+            // Resize on window resize
+            window.addEventListener('resize', () => this._resizeWaveformCanvas());
 
-            dom.timeline.appendChild(card);
-            card.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+            // Click to seek
+            dom.waveformContainer.addEventListener('click', (e) => this._onWaveformClick(e));
+
+            // Hover tooltip
+            dom.waveformContainer.addEventListener('mousemove', (e) => this._onWaveformHover(e));
+            dom.waveformContainer.addEventListener('mouseleave', () => {
+                dom.waveformTooltip.classList.remove('visible');
+            });
+
+            // LIVE badge click
+            dom.liveBadge.addEventListener('click', () => this._snapToLiveEdge());
+
+            // Start waveform draw loop
+            this._drawWaveformLoop();
+        }
+
+        _resizeWaveformCanvas() {
+            const canvas = dom.waveformCanvas;
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = 80;
+        }
+
+        _drawWaveformLoop() {
+            if (!this.running) return;
+            this.waveformAFId = requestAnimationFrame(() => this._drawWaveformLoop());
+            this._drawWaveform();
         }
 
         /**
-         * Update the generating placeholder card with actual segment data.
+         * Get the current playback position in accumulated-duration space.
+         * This is always correct even after seeking, because it finds the
+         * currently playing segment via AudioContext timestamps, then sums
+         * durations of all prior segments + elapsed within the current one.
          */
-        _finalizeTimelineCard(segment) {
-            const card = dom.timeline.querySelector(`[data-seg="${segment.index}"]`);
-            if (!card) return;
+        _getAccumulatedPlayPos() {
+            if (!this.audioCtx || this.segments.length === 0) return 0;
+            const now = this.audioCtx.currentTime;
 
-            card.classList.remove('generating');
+            // Find which segment is currently playing
+            let playingSeg = null;
+            let playingIdx = -1;
+            for (let i = this.segments.length - 1; i >= 0; i--) {
+                const s = this.segments[i];
+                if (s.startTime !== undefined && now >= s.startTime && now < s.endTime) {
+                    playingSeg = s;
+                    playingIdx = i;
+                    break;
+                }
+            }
 
-            const promptSnippet = segment.prompt.length > 40 ? segment.prompt.slice(0, 40) + '...' : (segment.prompt || '(empty)');
-            const dur = segment.audioBuffer ? segment.audioBuffer.duration.toFixed(1) : '?';
-            const metas = segment.metas || {};
+            if (!playingSeg) {
+                // Past all segments — return total duration
+                let total = 0;
+                for (const seg of this.segments) {
+                    total += seg.audioBuffer ? seg.audioBuffer.duration : (seg.endTime - seg.startTime);
+                }
+                return total;
+            }
 
-            card.innerHTML = `
-                <div class="seg-num">Segment #${segment.index}</div>
-                <div class="seg-prompt">${this._escHtml(promptSnippet)}</div>
-                <div class="seg-dur">${dur}s</div>
-                <div class="seg-meta">BPM ${metas.bpm || '?'} / ${metas.keyscale || '?'}</div>
-            `;
+            // Sum durations of all segments before the playing one
+            let accumulated = 0;
+            for (let i = 0; i < playingIdx; i++) {
+                const seg = this.segments[i];
+                accumulated += seg.audioBuffer ? seg.audioBuffer.duration : (seg.endTime - seg.startTime);
+            }
+
+            // Add elapsed within the currently playing segment
+            const elapsed = now - playingSeg.startTime;
+            accumulated += Math.max(0, elapsed);
+
+            return accumulated;
+        }
+
+        /**
+         * Get the total duration of all scheduled + generating segments.
+         */
+        _getTotalStreamDuration() {
+            let total = 0;
+            for (const seg of this.segments) {
+                if (seg.audioBuffer) total += seg.audioBuffer.duration;
+            }
+            if (this.generatingPlaceholder) {
+                total += this.generatingPlaceholder.duration;
+            }
+            return total;
+        }
+
+        /**
+         * Draw the waveform timeline bar.
+         * Shows played audio, buffered audio, generating placeholder,
+         * segment boundaries, and playhead.
+         */
+        _drawWaveform() {
+            const canvas = dom.waveformCanvas;
+            const ctx = this.waveformCtx;
+            if (!ctx) return;
+            const W = canvas.width;
+            const H = canvas.height;
+            const peaksPerSec = 100;
+            const pixelsPerSec = W / 40;  // 40-second visible window
+            const playheadFrac = 0.7;     // playhead at 70% from left
+
+            // Clear
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fillRect(0, 0, W, H);
+
+            if (this.segments.length === 0) return;
+
+            // Current playback position in accumulated-duration space
+            const playPos = this._getAccumulatedPlayPos();
+
+            // The time at the left edge of the visible window
+            const playheadX = W * playheadFrac;
+            const timeAtLeftEdge = playPos - (playheadFrac * 40);
+
+            // Build a flat list of segment ranges with their peaks
+            const segRanges = [];
+            let segTime = 0;
+            for (const seg of this.segments) {
+                const dur = seg.audioBuffer ? seg.audioBuffer.duration : (seg.endTime - seg.startTime);
+                segRanges.push({
+                    index: seg.index,
+                    start: segTime,
+                    end: segTime + dur,
+                    duration: dur,
+                    peaks: this.waveformPeaks.get(seg.index),
+                    prompt: seg.prompt,
+                    hasBuffer: !!seg.audioBuffer,
+                });
+                segTime += dur;
+            }
+
+            // Add generating placeholder at the end
+            if (this.generatingPlaceholder) {
+                segRanges.push({
+                    index: this.generatingPlaceholder.index,
+                    start: segTime,
+                    end: segTime + this.generatingPlaceholder.duration,
+                    duration: this.generatingPlaceholder.duration,
+                    peaks: null,
+                    prompt: dom.prompt.value || '',
+                    generating: true,
+                });
+            }
+
+            const timeAtRightEdge = timeAtLeftEdge + 40;
+
+            // Draw each segment's waveform
+            for (const sr of segRanges) {
+                // Skip if entirely outside visible window
+                if (sr.end < timeAtLeftEdge || sr.start > timeAtRightEdge) continue;
+
+                const segLeftX = (sr.start - timeAtLeftEdge) * pixelsPerSec;
+                const segRightX = (sr.end - timeAtLeftEdge) * pixelsPerSec;
+
+                if (sr.generating) {
+                    // Draw pulsing purple placeholder for generating segment
+                    const pulse = 0.3 + 0.2 * Math.sin(Date.now() / 300);
+                    ctx.fillStyle = `rgba(179, 136, 255, ${pulse})`;
+                    const x0 = Math.max(0, segLeftX);
+                    const x1 = Math.min(W, segRightX);
+                    ctx.fillRect(x0, H * 0.2, x1 - x0, H * 0.6);
+                    continue;
+                }
+
+                if (!sr.peaks) continue;
+
+                // Draw waveform bars for this segment
+                const peaks = sr.peaks;
+                const peakDuration = peaks.length / peaksPerSec;
+
+                for (let p = 0; p < peaks.length; p++) {
+                    const peakTime = sr.start + (p / peaksPerSec);
+                    if (peakTime < timeAtLeftEdge - 0.1 || peakTime > timeAtRightEdge + 0.1) continue;
+
+                    const x = (peakTime - timeAtLeftEdge) * pixelsPerSec;
+                    if (x < -2 || x > W + 2) continue;
+
+                    const val = peaks[p];
+                    const barH = Math.max(1, val * H * 0.85);
+                    const y = (H - barH) / 2;
+
+                    // Color: bright green if played, dim green if buffered ahead
+                    if (peakTime <= playPos) {
+                        ctx.fillStyle = '#1DB954';
+                    } else {
+                        ctx.fillStyle = sr.hasBuffer ? 'rgba(29, 185, 84, 0.35)' : 'rgba(29, 185, 84, 0.15)';
+                    }
+
+                    // Each peak = thin bar
+                    const barW = Math.max(1, pixelsPerSec / peaksPerSec - 0.5);
+                    ctx.fillRect(x, y, barW, barH);
+                }
+
+                // Segment boundary: dotted line
+                if (sr.start > timeAtLeftEdge && segLeftX > 0 && segLeftX < W) {
+                    ctx.setLineDash([3, 3]);
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(segLeftX, 0);
+                    ctx.lineTo(segLeftX, H);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Segment label
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                    ctx.font = '9px sans-serif';
+                    ctx.fillText(`#${sr.index}`, segLeftX + 3, 11);
+                }
+            }
+
+            // Draw playhead line
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
+            ctx.shadowBlur = 6;
+            ctx.beginPath();
+            ctx.moveTo(playheadX, 0);
+            ctx.lineTo(playheadX, H);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Small triangle at top of playhead
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.moveTo(playheadX - 5, 0);
+            ctx.lineTo(playheadX + 5, 0);
+            ctx.lineTo(playheadX, 7);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        /**
+         * Map a click on the waveform canvas to a segment + offset, then seek.
+         */
+        _onWaveformClick(e) {
+            if (!this.audioCtx || this.segments.length === 0) return;
+
+            const rect = dom.waveformCanvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const W = dom.waveformCanvas.width;
+            const pixelsPerSec = W / 40;
+            const playheadFrac = 0.7;
+
+            const playPos = this._getAccumulatedPlayPos();
+
+            const timeAtLeftEdge = playPos - (playheadFrac * 40);
+            const clickTime = timeAtLeftEdge + (clickX / pixelsPerSec);
+
+            if (clickTime < 0) return;
+
+            // Find which segment this click falls in
+            let segTime = 0;
+            for (const seg of this.segments) {
+                const dur = seg.audioBuffer ? seg.audioBuffer.duration : (seg.endTime - seg.startTime);
+                if (clickTime >= segTime && clickTime < segTime + dur) {
+                    const offset = clickTime - segTime;
+                    this.skipToSegment(seg.index, offset);
+                    return;
+                }
+                segTime += dur;
+            }
+
+            // If click is beyond all segments (in generating zone), snap to live edge
+            if (this.segments.length > 0) {
+                const last = this.segments[this.segments.length - 1];
+                this._snapToLiveEdge();
+            }
+        }
+
+        /**
+         * Show tooltip on hover with segment info.
+         */
+        _onWaveformHover(e) {
+            if (!this.audioCtx || this.segments.length === 0) {
+                dom.waveformTooltip.classList.remove('visible');
+                return;
+            }
+
+            const rect = dom.waveformCanvas.getBoundingClientRect();
+            const hoverX = e.clientX - rect.left;
+            const W = dom.waveformCanvas.width;
+            const pixelsPerSec = W / 40;
+            const playheadFrac = 0.7;
+
+            const playPos = this._getAccumulatedPlayPos();
+
+            const timeAtLeftEdge = playPos - (playheadFrac * 40);
+            const hoverTime = timeAtLeftEdge + (hoverX / pixelsPerSec);
+
+            // Find segment at hover time
+            let segTime = 0;
+            let found = null;
+            for (const seg of this.segments) {
+                const dur = seg.audioBuffer ? seg.audioBuffer.duration : (seg.endTime - seg.startTime);
+                if (hoverTime >= segTime && hoverTime < segTime + dur) {
+                    const offset = hoverTime - segTime;
+                    const snippet = (seg.prompt || '').slice(0, 30);
+                    found = `Seg #${seg.index} — ${snippet}${snippet.length >= 30 ? '...' : ''} — ${fmtTime(offset)}`;
+                    break;
+                }
+                segTime += dur;
+            }
+
+            if (!found && this.generatingPlaceholder && hoverTime >= segTime) {
+                found = `Seg #${this.generatingPlaceholder.index} — generating...`;
+            }
+
+            if (found) {
+                dom.waveformTooltip.textContent = found;
+                // Position tooltip above cursor
+                const tipX = Math.min(hoverX, W - 150);
+                dom.waveformTooltip.style.left = tipX + 'px';
+                dom.waveformTooltip.classList.add('visible');
+            } else {
+                dom.waveformTooltip.classList.remove('visible');
+            }
+        }
+
+        /** Snap back to the live edge (latest audio). */
+        _snapToLiveEdge() {
+            if (!this.audioCtx || this.segments.length === 0) return;
+            this.isAtLiveEdge = true;
+
+            // Find the last segment with a buffer and skip to near its end
+            const last = this.segments[this.segments.length - 1];
+            if (last && last.audioBuffer) {
+                // Skip to the last segment at its current elapsed position
+                const now = this.audioCtx.currentTime;
+                const elapsed = now - last.startTime;
+                if (elapsed >= 0 && elapsed < last.audioBuffer.duration) {
+                    // Already playing — just mark as live edge
+                    return;
+                }
+                // Otherwise skip to the last segment
+                this.skipToSegment(last.index);
+            }
+            this.isAtLiveEdge = true;  // Re-set after skipToSegment clears it
+        }
+
+        /** Update the LIVE badge to reflect live edge state. */
+        _updateLiveBadge() {
+            if (!this.audioCtx || this.segments.length === 0) return;
+            const now = this.audioCtx.currentTime;
+            const lastSeg = this.segments[this.segments.length - 1];
+
+            // Consider "at live edge" if within 3s of the end of all scheduled audio
+            const timeToEnd = lastSeg.endTime - now;
+            if (timeToEnd < 3 && !this.nextReady) {
+                this.isAtLiveEdge = true;
+            }
+
+            if (this.isAtLiveEdge) {
+                dom.liveBadge.className = 'live-badge live';
+            } else {
+                dom.liveBadge.className = 'live-badge behind';
+            }
         }
 
         _escHtml(str) {
