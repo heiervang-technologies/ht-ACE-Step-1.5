@@ -387,6 +387,42 @@
         }
         .waveform-tooltip.visible { opacity: 1; }
 
+        /* --- LoRA Controls --- */
+        .lora-section {
+            border-top: 1px solid var(--border);
+            padding-top: 12px;
+            margin-top: 8px;
+        }
+        .lora-section h4 {
+            font-size: 0.75rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin: 0 0 8px;
+        }
+        .lora-status {
+            font-size: 0.7rem;
+            color: var(--muted);
+            padding: 4px 0;
+        }
+        .lora-status.active { color: var(--accent); }
+        .lora-btn-row {
+            display: flex;
+            gap: 6px;
+        }
+        .lora-btn-row button {
+            flex: 1;
+            padding: 4px 8px;
+            font-size: 0.7rem;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+        }
+        .lora-btn-row button:hover { border-color: var(--accent); }
+        .lora-btn-row button:disabled { opacity: 0.4; cursor: default; }
+
         /* --- Log Console --- */
         .log-console {
             background: rgba(0, 0, 0, 0.5);
@@ -586,6 +622,27 @@
             <input type="checkbox" id="thinking">
             <label for="thinking">Enable Thinking</label>
         </div>
+
+        <!-- LoRA Controls -->
+        <div class="lora-section">
+            <h4>LoRA Adapter</h4>
+            <div class="ctrl-group">
+                <input type="text" id="loraPath" placeholder="/path/to/adapter or HF repo" style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);">
+            </div>
+            <div class="lora-btn-row" style="margin-top:6px;">
+                <button id="loraLoad">Load</button>
+                <button id="loraUnload" disabled>Unload</button>
+                <button id="loraToggle" disabled>Disable</button>
+            </div>
+            <div class="ctrl-group" style="margin-top:8px;">
+                <div class="ctrl-label">LoRA Scale</div>
+                <div class="slider-group">
+                    <input type="range" id="loraScale" min="0" max="1" step="0.05" value="1">
+                    <span id="loraScaleVal">1.0</span>
+                </div>
+            </div>
+            <div class="lora-status" id="loraStatus">No adapter loaded</div>
+        </div>
     </aside>
 
     <!-- ============================================================
@@ -707,6 +764,13 @@
         totalSegments:  $('totalSegments'),
         bufferStatus:   $('bufferStatus'),
         refStatus:      $('refStatus'),
+        loraPath:       $('loraPath'),
+        loraLoad:       $('loraLoad'),
+        loraUnload:     $('loraUnload'),
+        loraToggle:     $('loraToggle'),
+        loraScale:      $('loraScale'),
+        loraScaleVal:   $('loraScaleVal'),
+        loraStatus:     $('loraStatus'),
     };
 
     // ================================================================
@@ -856,6 +920,12 @@
 
             /** Waveform animation frame id */
             this.waveformAFId = null;
+
+            /** Cached playback position for the current frame */
+            this._cachedPlayPos = 0;
+
+            /** Pre-allocated frequency data buffer (set when analyser is created) */
+            this._freqData = null;
         }
 
         // ============================================================
@@ -931,12 +1001,7 @@
                 clearInterval(this.npInterval);
                 this.npInterval = null;
             }
-            // Stop visualizer
-            if (this.visAFId) {
-                cancelAnimationFrame(this.visAFId);
-                this.visAFId = null;
-            }
-            // Stop waveform
+            // Stop unified animation loop (waveform + visualizer)
             if (this.waveformAFId) {
                 cancelAnimationFrame(this.waveformAFId);
                 this.waveformAFId = null;
@@ -1564,9 +1629,8 @@
                 dom.npSegNum.textContent = '#' + playing.index;
                 dom.nowPlaying.classList.remove('idle');
 
-                // Update waveform time display
-                const totalElapsed = this._getAccumulatedPlayPos();
-                dom.waveformTime.textContent = fmtTime(totalElapsed);
+                // Update waveform time display (use frame-cached position)
+                dom.waveformTime.textContent = fmtTime(this._cachedPlayPos);
 
                 // Update LIVE badge state
                 this._updateLiveBadge();
@@ -1659,8 +1723,8 @@
             // LIVE badge click
             dom.liveBadge.addEventListener('click', () => this._snapToLiveEdge());
 
-            // Start waveform draw loop
-            this._drawWaveformLoop();
+            // Start unified animation loop (waveform + visualizer)
+            this._animationLoop();
         }
 
         _resizeWaveformCanvas() {
@@ -1670,10 +1734,16 @@
             canvas.height = 80;
         }
 
-        _drawWaveformLoop() {
+        /**
+         * Single animation loop driving both waveform and visualizer canvases.
+         * Caches playPos once per frame to avoid redundant O(n) segment scans.
+         */
+        _animationLoop() {
             if (!this.running) return;
-            this.waveformAFId = requestAnimationFrame(() => this._drawWaveformLoop());
+            this.waveformAFId = requestAnimationFrame(() => this._animationLoop());
+            this._cachedPlayPos = this._getAccumulatedPlayPos();
             this._drawWaveform();
+            this._drawVisualizerFrame();
         }
 
         /**
@@ -1756,8 +1826,8 @@
 
             if (this.segments.length === 0) return;
 
-            // Current playback position in accumulated-duration space
-            const playPos = this._getAccumulatedPlayPos();
+            // Use frame-cached playback position (computed once in _animationLoop)
+            const playPos = this._cachedPlayPos;
 
             // The time at the left edge of the visible window
             const playheadX = W * playheadFrac;
@@ -1815,31 +1885,39 @@
 
                 if (!sr.peaks) continue;
 
-                // Draw waveform bars for this segment
+                // Draw waveform bars for this segment.
+                // Two-pass: played peaks (bright green), then buffered (dim green).
+                // Minimises fillStyle changes — major canvas perf win.
                 const peaks = sr.peaks;
-                const peakDuration = peaks.length / peaksPerSec;
+                const barW = Math.max(1, pixelsPerSec / peaksPerSec - 0.5);
 
-                for (let p = 0; p < peaks.length; p++) {
-                    const peakTime = sr.start + (p / peaksPerSec);
-                    if (peakTime < timeAtLeftEdge - 0.1 || peakTime > timeAtRightEdge + 0.1) continue;
+                // Compute visible peak index range to skip off-screen peaks
+                const visStart = Math.max(0, Math.floor((timeAtLeftEdge - sr.start) * peaksPerSec) - 1);
+                const visEnd = Math.min(peaks.length, Math.ceil((timeAtRightEdge - sr.start) * peaksPerSec) + 1);
 
-                    const x = (peakTime - timeAtLeftEdge) * pixelsPerSec;
-                    if (x < -2 || x > W + 2) continue;
+                // Peak index where playhead falls within this segment
+                const playPeakIdx = Math.floor((playPos - sr.start) * peaksPerSec);
 
-                    const val = peaks[p];
-                    const barH = Math.max(1, val * H * 0.85);
-                    const y = (H - barH) / 2;
-
-                    // Color: bright green if played, dim green if buffered ahead
-                    if (peakTime <= playPos) {
-                        ctx.fillStyle = '#1DB954';
-                    } else {
-                        ctx.fillStyle = sr.hasBuffer ? 'rgba(29, 185, 84, 0.35)' : 'rgba(29, 185, 84, 0.15)';
+                // Pass 1: played peaks (bright green)
+                const playedEnd = Math.min(visEnd, playPeakIdx + 1);
+                if (playedEnd > visStart) {
+                    ctx.fillStyle = '#1DB954';
+                    for (let p = visStart; p < playedEnd; p++) {
+                        const x = (sr.start + p / peaksPerSec - timeAtLeftEdge) * pixelsPerSec;
+                        const barH = Math.max(1, peaks[p] * H * 0.85);
+                        ctx.fillRect(x, (H - barH) / 2, barW, barH);
                     }
+                }
 
-                    // Each peak = thin bar
-                    const barW = Math.max(1, pixelsPerSec / peaksPerSec - 0.5);
-                    ctx.fillRect(x, y, barW, barH);
+                // Pass 2: buffered/unbuffered peaks (dim green)
+                const bufStart = Math.max(visStart, playPeakIdx + 1);
+                if (bufStart < visEnd) {
+                    ctx.fillStyle = sr.hasBuffer ? 'rgba(29, 185, 84, 0.35)' : 'rgba(29, 185, 84, 0.15)';
+                    for (let p = bufStart; p < visEnd; p++) {
+                        const x = (sr.start + p / peaksPerSec - timeAtLeftEdge) * pixelsPerSec;
+                        const barH = Math.max(1, peaks[p] * H * 0.85);
+                        ctx.fillRect(x, (H - barH) / 2, barW, barH);
+                    }
                 }
 
                 // Segment boundary: dotted line
@@ -1860,16 +1938,19 @@
                 }
             }
 
-            // Draw playhead line
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2;
-            ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
-            ctx.shadowBlur = 6;
+            // Draw playhead line (glow via a wider semi-transparent pass)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+            ctx.lineWidth = 6;
             ctx.beginPath();
             ctx.moveTo(playheadX, 0);
             ctx.lineTo(playheadX, H);
             ctx.stroke();
-            ctx.shadowBlur = 0;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(playheadX, 0);
+            ctx.lineTo(playheadX, H);
+            ctx.stroke();
 
             // Small triangle at top of playhead
             ctx.fillStyle = '#ffffff';
@@ -1934,7 +2015,8 @@
             const pixelsPerSec = W / 40;
             const playheadFrac = 0.7;
 
-            const playPos = this._getAccumulatedPlayPos();
+            // Use frame-cached position (avoids per-mousemove O(n) scan)
+            const playPos = this._cachedPlayPos;
 
             const timeAtLeftEdge = playPos - (playheadFrac * 40);
             const hoverTime = timeAtLeftEdge + (hoverX / pixelsPerSec);
@@ -2019,10 +2101,9 @@
         // ============================================================
 
         _startVisualizer() {
-            if (this.visAFId) cancelAnimationFrame(this.visAFId);
             this._resizeCanvas();
             window.addEventListener('resize', () => this._resizeCanvas());
-            this._drawVisualizerFrame();
+            // Visualizer frames are now driven by the unified _animationLoop
         }
 
         _resizeCanvas() {
@@ -2033,23 +2114,15 @@
         }
 
         _drawVisualizerFrame() {
-            if (!this.running) {
-                // Draw a blank frame
-                const c = this.visCtx;
-                const w = dom.visualizer.width;
-                const h = dom.visualizer.height;
-                c.fillStyle = '#0a0a0a';
-                c.fillRect(0, 0, w, h);
-                return;
-            }
-
-            this.visAFId = requestAnimationFrame(() => this._drawVisualizerFrame());
-
             const analyser = this.analyser;
             if (!analyser) return;
 
-            const bufLen = analyser.frequencyBinCount;
-            const dataArray = new Uint8Array(bufLen);
+            // Pre-allocate frequency buffer once
+            if (!this._freqData || this._freqData.length !== analyser.frequencyBinCount) {
+                this._freqData = new Uint8Array(analyser.frequencyBinCount);
+            }
+            const dataArray = this._freqData;
+            const bufLen = dataArray.length;
             analyser.getByteFrequencyData(dataArray);
 
             const canvas = dom.visualizer;
@@ -2090,12 +2163,10 @@
                 c.closePath();
                 c.fill();
 
-                // Subtle glow for loud bars
+                // Highlight loud bars with a brighter fill (no shadowBlur for perf)
                 if (val > 0.7) {
-                    c.shadowColor = `hsl(${hue}, 100%, 60%)`;
-                    c.shadowBlur = 8;
+                    c.fillStyle = `hsl(${hue}, 100%, ${50 + val * 20}%)`;
                     c.fill();
-                    c.shadowBlur = 0;
                 }
             }
 
@@ -2128,6 +2199,102 @@
     dom.masterVolume.addEventListener('input', () => {
         engine._applyVolume();
     });
+
+    // ================================================================
+    // LoRA Controls
+    // ================================================================
+    async function loraApiCall(endpoint, method = 'GET', body = null) {
+        const base = dom.apiBase.value.replace(/\/+$/, '');
+        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+        if (body) opts.body = JSON.stringify(body);
+        const res = await fetch(`${base}${endpoint}`, opts);
+        return res.json();
+    }
+
+    async function refreshLoraStatus() {
+        try {
+            const r = await loraApiCall('/v1/lora/status');
+            const d = r.data || {};
+            if (d.lora_loaded) {
+                const names = (d.adapters || []).join(', ');
+                const enabled = d.use_lora;
+                dom.loraStatus.textContent = `${enabled ? '✓' : '✗'} ${names} (scale ${(d.lora_scale ?? 1).toFixed(2)})`;
+                dom.loraStatus.className = 'lora-status' + (enabled ? ' active' : '');
+                dom.loraUnload.disabled = false;
+                dom.loraToggle.disabled = false;
+                dom.loraToggle.textContent = enabled ? 'Disable' : 'Enable';
+                dom.loraScale.value = d.lora_scale ?? 1;
+                dom.loraScaleVal.textContent = (d.lora_scale ?? 1).toFixed(2);
+            } else {
+                dom.loraStatus.textContent = 'No adapter loaded';
+                dom.loraStatus.className = 'lora-status';
+                dom.loraUnload.disabled = true;
+                dom.loraToggle.disabled = true;
+                dom.loraToggle.textContent = 'Disable';
+            }
+        } catch (e) {
+            dom.loraStatus.textContent = 'Status check failed';
+        }
+    }
+
+    dom.loraLoad.addEventListener('click', async () => {
+        const path = dom.loraPath.value.trim();
+        if (!path) return;
+        dom.loraLoad.disabled = true;
+        dom.loraLoad.textContent = 'Loading...';
+        try {
+            const r = await loraApiCall('/v1/lora/load', 'POST', { lora_path: path });
+            if (r.code === 200) {
+                log(`LoRA loaded: ${r.data?.message || path}`, 'log-success');
+            } else {
+                log(`LoRA load failed: ${r.data?.message || r.error || 'unknown error'}`, 'log-error');
+            }
+        } catch (e) {
+            log(`LoRA load error: ${e.message}`, 'log-error');
+        }
+        dom.loraLoad.disabled = false;
+        dom.loraLoad.textContent = 'Load';
+        refreshLoraStatus();
+    });
+
+    dom.loraUnload.addEventListener('click', async () => {
+        try {
+            await loraApiCall('/v1/lora/unload', 'POST');
+            log('LoRA unloaded', 'log-warn');
+        } catch (e) {
+            log(`LoRA unload error: ${e.message}`, 'log-error');
+        }
+        refreshLoraStatus();
+    });
+
+    dom.loraToggle.addEventListener('click', async () => {
+        const enabling = dom.loraToggle.textContent === 'Enable';
+        try {
+            await loraApiCall('/v1/lora/toggle', 'POST', { use_lora: enabling });
+            log(`LoRA ${enabling ? 'enabled' : 'disabled'}`, enabling ? 'log-success' : 'log-warn');
+        } catch (e) {
+            log(`LoRA toggle error: ${e.message}`, 'log-error');
+        }
+        refreshLoraStatus();
+    });
+
+    dom.loraScale.addEventListener('input', () => {
+        dom.loraScaleVal.textContent = parseFloat(dom.loraScale.value).toFixed(2);
+    });
+
+    dom.loraScale.addEventListener('change', async () => {
+        const scale = parseFloat(dom.loraScale.value);
+        try {
+            await loraApiCall('/v1/lora/scale', 'POST', { scale });
+            log(`LoRA scale set to ${scale.toFixed(2)}`, 'log-info');
+        } catch (e) {
+            log(`LoRA scale error: ${e.message}`, 'log-error');
+        }
+        refreshLoraStatus();
+    });
+
+    // Check LoRA status on page load
+    refreshLoraStatus();
 
     // ================================================================
     // Initial footer state
