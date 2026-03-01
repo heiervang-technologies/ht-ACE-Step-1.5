@@ -525,6 +525,11 @@
         </div>
 
         <div class="control-group">
+            <label for="negativePrompt">Negative Prompt</label>
+            <textarea id="negativePrompt" rows="2" placeholder="e.g. poor quality, noise, vocals"></textarea>
+        </div>
+
+        <div class="control-group" id="lyricsGroup">
             <label for="lyrics">Lyrics</label>
             <textarea id="lyrics" rows="6" placeholder="[Verse 1]&#10;Walking through the rain...&#10;&#10;[Chorus]&#10;Let it all go..."></textarea>
         </div>
@@ -540,16 +545,16 @@
         <div class="control-group">
             <label>Context Prefill (s)</label>
             <div class="range-row">
-                <input type="range" id="contextDuration" min="2" max="30" step="1" value="10">
-                <span class="range-val" id="contextDurationVal">10</span>
+                <input type="range" id="contextDuration" min="2" max="30" step="1" value="3">
+                <span class="range-val" id="contextDurationVal">3</span>
             </div>
         </div>
 
         <div class="control-group">
             <label>End Guard (s) — extra tail discarded to prevent song endings</label>
             <div class="range-row">
-                <input type="range" id="endGuard" min="0" max="30" step="1" value="10">
-                <span class="range-val" id="endGuardVal">10</span>
+                <input type="range" id="endGuard" min="0" max="30" step="1" value="3">
+                <span class="range-val" id="endGuardVal">3</span>
             </div>
         </div>
 
@@ -580,30 +585,38 @@
             </div>
         </div>
 
-        <div class="control-group">
-            <label for="vocalLanguage">Language</label>
-            <select id="vocalLanguage">
-                <option value="en">English</option>
-                <option value="zh">Chinese</option>
-                <option value="ja">Japanese</option>
-                <option value="ko">Korean</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="unknown">Unknown</option>
-            </select>
+        <div class="row-2">
+            <div class="control-group">
+                <label for="vocalLanguage">Language</label>
+                <select id="vocalLanguage">
+                    <option value="en">English</option>
+                    <option value="zh">Chinese</option>
+                    <option value="ja">Japanese</option>
+                    <option value="ko">Korean</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+            </div>
+            <div class="control-group" style="display:flex; align-items:flex-end;">
+                <div class="checkbox-group" style="margin-bottom:8px;">
+                    <input type="checkbox" id="instrumental">
+                    <label for="instrumental">Instrumental</label>
+                </div>
+            </div>
         </div>
 
         <div class="control-group">
             <label>Inference Steps</label>
             <div class="range-row">
-                <input type="range" id="infSteps" min="1" max="100" value="50">
+                <input type="range" id="infSteps" min="1" max="100" value="8">
                 <span class="range-val" id="infStepsVal">8</span>
             </div>
         </div>
 
         <div class="control-group">
-            <label>CFG Scale</label>
+            <label>CFG Scale (Prompt Influence)</label>
             <div class="range-row">
                 <input type="range" id="cfgScale" min="1" max="15" step="0.5" value="7">
                 <span class="range-val" id="cfgScaleVal">7.0</span>
@@ -611,10 +624,10 @@
         </div>
 
         <div class="control-group">
-            <label>Weirdness — lower = faithful continuation, higher = creative drift</label>
+            <label>Audio Influence (Repaint Context)</label>
             <div class="range-row">
-                <input type="range" id="weirdness" min="0" max="100" step="5" value="30">
-                <span class="range-val" id="weirdnessVal">30%</span>
+                <input type="range" id="audioInfluence" min="0" max="1" step="0.05" value="1">
+                <span class="range-val" id="audioInfluenceVal">1.0</span>
             </div>
         </div>
 
@@ -627,7 +640,13 @@
         <div class="lora-section">
             <h4>LoRA Adapter</h4>
             <div class="ctrl-group">
-                <input type="text" id="loraPath" placeholder="/path/to/adapter or HF repo" style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);">
+                <select id="loraSelect" style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:0.75rem;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:var(--text);outline:none;margin-bottom:6px;">
+                    <option value="">-- Select a LoRA --</option>
+                    <option value="loras/acestep15_drumnbass_lora">Drum & Bass (v1.5)</option>
+                    <option value="loras/drumnbass_v3">Drum & Bass (v3)</option>
+                    <option value="custom">Custom Path/URL...</option>
+                </select>
+                <input type="text" id="loraPath" placeholder="/path/to/adapter or HF repo" style="display:none;width:100%;box-sizing:border-box;padding:6px 8px;font-size:0.75rem;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:var(--text);outline:none;">
             </div>
             <div class="lora-btn-row" style="margin-top:6px;">
                 <button id="loraLoad">Load</button>
@@ -729,15 +748,18 @@
         btnPlay:        $('btnPlay'),
         btnStop:        $('btnStop'),
         prompt:         $('prompt'),
+        negativePrompt: $('negativePrompt'),
+        lyricsGroup:    $('lyricsGroup'),
         lyrics:         $('lyrics'),
+        instrumental:   $('instrumental'),
         segDuration:    $('segDuration'),
         segDurationVal: $('segDurationVal'),
         contextDuration:  $('contextDuration'),
         contextDurationVal: $('contextDurationVal'),
         endGuard:         $('endGuard'),
         endGuardVal:      $('endGuardVal'),
-        weirdness:        $('weirdness'),
-        weirdnessVal:     $('weirdnessVal'),
+        audioInfluence:   $('audioInfluence'),
+        audioInfluenceVal:$('audioInfluenceVal'),
         bpm:            $('bpm'),
         keyScale:       $('keyScale'),
         vocalLanguage:  $('vocalLanguage'),
@@ -764,6 +786,7 @@
         totalSegments:  $('totalSegments'),
         bufferStatus:   $('bufferStatus'),
         refStatus:      $('refStatus'),
+        loraSelect:     $('loraSelect'),
         loraPath:       $('loraPath'),
         loraLoad:       $('loraLoad'),
         loraUnload:     $('loraUnload'),
@@ -784,7 +807,7 @@
     wireSlider(dom.segDuration,   dom.segDurationVal,   v => v);
     wireSlider(dom.contextDuration, dom.contextDurationVal, v => v);
     wireSlider(dom.endGuard,     dom.endGuardVal,      v => v);
-    wireSlider(dom.weirdness,   dom.weirdnessVal,     v => v + '%');
+    wireSlider(dom.audioInfluence, dom.audioInfluenceVal, v => parseFloat(v).toFixed(2));
     wireSlider(dom.infSteps,      dom.infStepsVal,      v => v);
     wireSlider(dom.cfgScale,      dom.cfgScaleVal,      v => parseFloat(v).toFixed(1));
     wireSlider(dom.masterVolume,  dom.volumeVal,        v => v + '%');
@@ -835,9 +858,11 @@
 
     /** Read current UI parameters into an object. */
     function readParams() {
+        const isInstrumental = dom.instrumental.checked;
         return {
             prompt:          dom.prompt.value,
-            lyrics:          dom.lyrics.value,
+            negative_prompt: dom.negativePrompt.value,
+            lyrics:          isInstrumental ? '[Instrumental]' : dom.lyrics.value,
             audio_duration:  parseInt(dom.segDuration.value, 10),
             task_type:       'text2music',
             inference_steps: parseInt(dom.infSteps.value, 10),
@@ -1086,16 +1111,13 @@
             const apiBase = getApiBase();
             const isRepaint = ctxBlob !== null;
             const endGuard = parseInt(dom.endGuard.value, 10);
-            // Weirdness 0-100% → audio_cover_strength 0.0-1.0
-            // Lower cover_strength = model deviates more from the context
-            const weirdness = parseInt(dom.weirdness.value, 10) / 100;
-            const coverStrength = 1.0 - weirdness;
+            const coverStrength = parseFloat(dom.audioInfluence.value);
 
             // Total audio duration includes end guard buffer (discarded to prevent endings)
             const genDur = params.audio_duration + endGuard;
             const totalDur = isRepaint ? contextDur + genDur : genDur;
 
-            log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s play + ${endGuard}s guard = ${totalDur}s total, weird=${(weirdness*100).toFixed(0)}%)`, 'log-gen');
+            log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s play + ${endGuard}s guard = ${totalDur}s total, cover_strength=${coverStrength.toFixed(2)})`, 'log-gen');
             setPipelineStage('generating');
 
             // --- 1. Release task ---
@@ -1104,6 +1126,7 @@
                 // Repaint mode: upload context audio as ctx_audio
                 const fd = new FormData();
                 fd.append('prompt', params.prompt);
+                if (params.negative_prompt) fd.append('lm_negative_prompt', params.negative_prompt);
                 fd.append('lyrics', params.lyrics);
                 fd.append('audio_duration', totalDur);
                 fd.append('task_type', 'repaint');
@@ -1137,6 +1160,7 @@
                     audio_format:        'wav',
                     vocal_language:      params.vocal_language,
                 };
+                if (params.negative_prompt) body.lm_negative_prompt = params.negative_prompt;
                 if (params.bpm) body.bpm = params.bpm;
                 if (params.key_scale) body.key_scale = params.key_scale;
                 releaseRes = await fetch(`${apiBase}/release_task`, {
@@ -1507,15 +1531,18 @@
             if (!this.running || this.generating) return;
             this.generating = true;
 
-            const contextDur = parseInt(dom.contextDuration.value, 10);
+            const requestedContextDur = parseInt(dom.contextDuration.value, 10);
+            let contextDur = requestedContextDur;
             let ctxBlob = null;
 
             // If we have a previous playable buffer, extract its tail as context
             // (excludes end guard so we don't use the discarded ending as context)
             if (this.lastPlayableBuffer) {
+                contextDur = Math.min(requestedContextDur, this.lastPlayableBuffer.duration);
                 ctxBlob = this._extractTailAsWav(this.lastPlayableBuffer, contextDur);
-                dom.refStatus.textContent = `ctx ${contextDur}s (${(ctxBlob.size/1024).toFixed(0)}KB)`;
+                dom.refStatus.textContent = `ctx ${contextDur.toFixed(1)}s (${(ctxBlob.size/1024).toFixed(0)}KB)`;
             } else {
+                contextDur = 0;
                 dom.refStatus.textContent = 'none (first segment)';
             }
 
@@ -2185,6 +2212,30 @@
     // ================================================================
     const engine = new DJEngine();
 
+    // Instrumental toggle
+    dom.instrumental.addEventListener('change', (e) => {
+        dom.lyricsGroup.style.display = e.target.checked ? 'none' : 'block';
+    });
+
+    // Auto-fill placeholders on Enter if empty
+    function autoFillPlaceholder(el) {
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && el.value.trim() === '') {
+                e.preventDefault();
+                // Extract the placeholder text, removing the 'e.g. ' prefix if present
+                let text = el.getAttribute('placeholder') || '';
+                if (text.startsWith('e.g. ')) {
+                    text = text.substring(5);
+                }
+                el.value = text;
+            }
+        });
+    }
+
+    autoFillPlaceholder(dom.prompt);
+    autoFillPlaceholder(dom.negativePrompt);
+    autoFillPlaceholder(dom.lyrics);
+
     // Play button
     dom.btnPlay.addEventListener('click', () => {
         engine.start();
@@ -2237,8 +2288,20 @@
         }
     }
 
+    dom.loraSelect.addEventListener('change', () => {
+        if (dom.loraSelect.value === 'custom') {
+            dom.loraPath.style.display = 'block';
+            dom.loraPath.focus();
+        } else {
+            dom.loraPath.style.display = 'none';
+        }
+    });
+
     dom.loraLoad.addEventListener('click', async () => {
-        const path = dom.loraPath.value.trim();
+        let path = dom.loraSelect.value;
+        if (path === 'custom') {
+            path = dom.loraPath.value.trim();
+        }
         if (!path) return;
         dom.loraLoad.disabled = true;
         dom.loraLoad.textContent = 'Loading...';
