@@ -247,6 +247,7 @@ lokr_output/
 .claude/skills/acestep/scripts/.first_gen_done
 .claude/skills/acestep-simplemv/scripts/public/
 config.json
+loras/
 
 acestep_output/
 # macOS
