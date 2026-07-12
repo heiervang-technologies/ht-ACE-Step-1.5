@@ -421,11 +421,12 @@ def generate_music(
         actual_seed_list, _ = dit_handler.prepare_seeds(actual_batch_size, seed_for_generation, config.use_random_seed)
 
         # LM-based Chain-of-Thought reasoning
-        # Skip LM for cover/repaint/extract tasks - these tasks use reference/src audio directly
+        # Skip LM for cover/extract tasks - these tasks use reference/src audio directly
         # and don't need LM to generate audio codes or metadata.
         # For extract tasks, LLM-generated captions can conflict with the extract instruction
         # and cause the DiT model to reconstruct input audio instead of extracting stems.
-        skip_lm_tasks = {"cover", "repaint", "extract"}
+        # Note: repaint is NOT skipped — LLM codes improve continuations (e.g. DJ mode).
+        skip_lm_tasks = {"cover", "extract"}
         
         # Determine if we should use LLM
         # LLM is needed for:
