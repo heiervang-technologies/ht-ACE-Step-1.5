@@ -188,120 +188,6 @@
             font-size: 0.85rem;
             outline: none;
         }
-
-        /* Prompt list styles */
-        .prompts-list {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            margin-bottom: 8px;
-        }
-
-        .prompt-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            background: var(--input-bg);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 6px 10px;
-        }
-
-        .prompt-item input[type="text"] {
-            flex: 1;
-            background: transparent;
-            border: none;
-            color: var(--text);
-            font-size: 0.85rem;
-            outline: none;
-            min-width: 0;
-        }
-
-        .prompt-item input[type="text"]:focus {
-            background: var(--panel-bg);
-        }
-
-        .btn-remove-prompt {
-            background: transparent;
-            border: none;
-            color: var(--muted);
-            cursor: pointer;
-            font-size: 1.1rem;
-            line-height: 1;
-            padding: 2px 4px;
-            border-radius: 3px;
-        }
-
-        .btn-remove-prompt:hover {
-            background: var(--danger);
-            color: white;
-        }
-
-        .prompt-add-row {
-            display: flex;
-            gap: 6px;
-        }
-
-        .prompt-add-row input {
-            flex: 1;
-            background: var(--input-bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            padding: 8px 10px;
-            border-radius: 6px;
-            font-size: 0.85rem;
-            outline: none;
-        }
-
-        .prompt-add-row input:focus {
-            border-color: var(--accent);
-        }
-
-        .btn-add-prompt {
-            background: var(--accent);
-            color: black;
-            border: none;
-            border-radius: 6px;
-            font-weight: 700;
-            font-size: 1.1rem;
-            cursor: pointer;
-            padding: 0 12px;
-            transition: all 0.2s;
-        }
-
-        .btn-add-prompt:hover {
-            background: var(--accent-hover);
-        }
-
-        .separator-row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-top: 6px;
-        }
-
-        .separator-row label {
-            font-size: 0.65rem;
-            color: var(--muted);
-            white-space: nowrap;
-        }
-
-        .separator-input {
-            width: 60px;
-            background: var(--input-bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            padding: 4px 6px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            outline: none;
-        }
-
-        .separator-input:focus {
-            border-color: var(--accent);
-        }
-
-
         .sidebar textarea { resize: vertical; font-family: monospace; font-size: 0.8rem; }
         .sidebar textarea:focus,
         .sidebar input:focus,
@@ -634,26 +520,14 @@
          ============================================================ -->
     <aside class="sidebar">
         <div class="control-group">
-            <label>Positive Prompts</label>
-            <div id="positivePromptsList" class="prompts-list"></div>
-            <div class="prompt-add-row">
-                <input type="text" id="newPositivePrompt" placeholder="Add a prompt (e.g. deep sub bass, rolling rhythm)">
-                <button class="btn-add-prompt" id="addPositivePrompt" title="Add prompt">+</button>
-            </div>
-</div>
+            <label for="prompt">Prompt</label>
+            <textarea id="prompt" rows="4" placeholder="e.g. lo-fi chill hop, mellow piano, vinyl crackle, rainy day vibes"></textarea>
+        </div>
 
         <div class="control-group">
-            <label>Negative Prompts</label>
-            <div id="negativePromptsList" class="prompts-list"></div>
-            <div class="prompt-add-row">
-                <input type="text" id="newNegativePrompt" placeholder="Add a negative prompt (e.g. vocals, distortion)">
-                <button class="btn-add-prompt" id="addNegativePrompt" title="Add prompt">+</button>
-            </div>
-</div>
-
-        <!-- Hidden fields for API compatibility -->
-        <input type="hidden" id="prompt">
-        <input type="hidden" id="negativePrompt">
+            <label for="negativePrompt">Negative Prompt</label>
+            <textarea id="negativePrompt" rows="2" placeholder="e.g. poor quality, noise, vocals"></textarea>
+        </div>
 
         <div class="control-group" id="lyricsGroup">
             <label for="lyrics">Lyrics</label>
@@ -758,7 +632,7 @@
         </div>
 
         <div class="checkbox-group">
-            <input type="checkbox" id="thinking" checked>
+            <input type="checkbox" id="thinking">
             <label for="thinking">Enable Thinking</label>
         </div>
 
@@ -810,14 +684,9 @@
                 </div>
             </div>
 
-            
-                
-                
-            
             <div style="display: flex; flex-direction: column; justify-content: center; gap: 6px;">
                 <div style="font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;">Pipeline</div>
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <div class="pipeline-badges" id="pipelineBadges">
+                <div class="pipeline-badges" id="pipelineBadges">
                     <span class="pipe-badge active-idle" data-stage="idle">Idle</span>
                     <span class="pipe-badge" data-stage="generating">Generating</span>
                     <span class="pipe-badge" data-stage="downloading">Downloading</span>
@@ -825,15 +694,10 @@
                     <span class="pipe-badge" data-stage="ready">Ready</span>
                     <span class="pipe-badge" data-stage="playing">Playing</span>
                 </div>
-                    <div id="genProgressWrap" style="display: none; margin-top: 8px;">
-                        <div style="font-size: 0.65rem; color: var(--muted); text-transform: uppercase; margin-bottom: 4px;">Generation Progress</div>
-                        <div style="background: var(--border); height: 6px; border-radius: 3px; overflow: hidden;">
-                            <div id="genProgressBar" style="background: var(--accent); width: 0%; height: 100%; transition: width 0.3s ease;"></div>
-                        </div>
-                    </div>
-                </div>
             </div>
-            <!-- Visualizer -->
+        </div>
+
+        <!-- Visualizer -->
         <div class="visualizer-wrap">
             <canvas id="visualizer"></canvas>
         </div>
@@ -883,15 +747,7 @@
         volumeVal:      $('volumeVal'),
         btnPlay:        $('btnPlay'),
         btnStop:        $('btnStop'),
-        positivePromptsList: $('positivePromptsList'),
-        negativePromptsList: $('negativePromptsList'),
-        newPositivePrompt: $('newPositivePrompt'),
-        newNegativePrompt: $('newNegativePrompt'),
-        addPositivePrompt: $('addPositivePrompt'),
-        addNegativePrompt: $('addNegativePrompt'),
-        promptSeparator: $('promptSeparator'),
-        negPromptSeparator: $('negPromptSeparator'),
-        prompt: $('prompt'),
+        prompt:         $('prompt'),
         negativePrompt: $('negativePrompt'),
         lyricsGroup:    $('lyricsGroup'),
         lyrics:         $('lyrics'),
@@ -938,9 +794,7 @@
         loraScale:      $('loraScale'),
         loraScaleVal:   $('loraScaleVal'),
         loraStatus:     $('loraStatus'),
-    
-    genProgressWrap: $('genProgressWrap'),
-    genProgressBar: $('genProgressBar'),};
+    };
 
     // ================================================================
     // Slider wiring — keep display values in sync
@@ -958,116 +812,6 @@
     wireSlider(dom.cfgScale,      dom.cfgScaleVal,      v => parseFloat(v).toFixed(1));
     wireSlider(dom.masterVolume,  dom.volumeVal,        v => v + '%');
 
-    // ================================================================
-    // Dynamic Prompt Lists Manager
-    // ================================================================
-    class PromptManager {
-        constructor(listEl, hiddenInputEl, addInputEl, addBtnEl) {
-            this.listEl = listEl;
-            this.hiddenInputEl = hiddenInputEl;
-            this.addInputEl = addInputEl;
-            this.addBtnEl = addBtnEl;
-            this.prompts = [];
-            this.init();
-        }
-        
-        init() {
-            this.addBtnEl.addEventListener('click', () => this.addFromInput());
-            this.addInputEl.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    this.addFromInput();
-                }
-            });
-            
-        }
-        
-        addFromInput() {
-            const text = this.addInputEl.value.trim();
-            if (text) {
-                this.addPrompt(text);
-                this.addInputEl.value = '';
-            }
-        }
-        
-        addPrompt(text) {
-            if (!text.trim()) return;
-            this.prompts.push(text);
-            this.render();
-            this.updateHidden();
-        }
-        
-        removePrompt(index) {
-            this.prompts.splice(index, 1);
-            this.render();
-            this.updateHidden();
-        }
-        
-        updatePrompt(index, text) {
-            this.prompts[index] = text;
-            this.updateHidden();
-        }
-        
-        render() {
-            this.listEl.innerHTML = '';
-            this.prompts.forEach((text, index) => {
-                const item = document.createElement('div');
-                item.className = 'prompt-item';
-                item.innerHTML = `
-                    <input type="text" value="${this.escapeHtml(text)}" data-index="${index}">
-                    <button class="btn-remove-prompt" data-index="${index}" title="Remove">&times;</button>
-                `;
-                this.listEl.appendChild(item);
-                
-                const input = item.querySelector('input');
-                input.addEventListener('input', (e) => {
-                    this.updatePrompt(index, e.target.value);
-                });
-                input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        this.addInputEl.focus();
-                    }
-                });
-                
-                const btn = item.querySelector('.btn-remove-prompt');
-                btn.addEventListener('click', () => this.removePrompt(index));
-            });
-        }
-        
-        updateHidden() {
-            const separator = ", ";
-            this.hiddenInputEl.value = this.prompts.join(separator);
-        }
-        
-        escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        setPrompts(prompts) {
-            this.prompts = prompts.filter(p => p.trim());
-            this.render();
-            this.updateHidden();
-        }
-        
-        getPrompts() {
-            return [...this.prompts];
-        }
-    }
-    
-    // Initialize prompt managers
-    const positivePromptManager = new PromptManager(dom.positivePromptsList, dom.prompt,
-        dom.newPositivePrompt,
-        dom.addPositivePrompt
-    );
-    
-    const negativePromptManager = new PromptManager(dom.negativePromptsList, dom.negativePrompt,
-        dom.newNegativePrompt,
-        dom.addNegativePrompt
-    );
-    
     // ================================================================
     // Logging
     // ================================================================
@@ -1189,7 +933,6 @@
 
             /** Waveform peaks cache: segIndex → Float32Array (100 peaks/sec) */
             this.waveformPeaks = new Map();
-            this.lastLoggedProgress = null;
 
             /** Canvas 2D context for the waveform bar */
             this.waveformCtx = null;
@@ -1291,7 +1034,6 @@
 
             // Let currently playing source finish naturally (it will stop on its own).
             // Mark pipeline idle.
-            dom.genProgressWrap.style.display = 'none';
             setPipelineStage('idle');
             dom.nowPlaying.classList.add('idle');
             dom.btnPlay.disabled = false;
@@ -1376,7 +1118,6 @@
             const totalDur = isRepaint ? contextDur + genDur : genDur;
 
             log(`[Seg #${segIndex}] ${isRepaint ? 'Repaint' : 'Text2Music'} (${isRepaint ? contextDur + 's ctx + ' : ''}${params.audio_duration}s play + ${endGuard}s guard = ${totalDur}s total, cover_strength=${coverStrength.toFixed(2)})`, 'log-gen');
-            dom.genProgressBar.style.width = '0%';
             setPipelineStage('generating');
 
             // --- 1. Release task ---
@@ -1563,16 +1304,7 @@
                             const task = data.data[0];
 
                             if (task.progress_text) {
-                                dom.genProgressWrap.style.display = 'block';
-                                const pctMatch = task.progress_text.match(/(\d+)%/);
-                                if (pctMatch) {
-                                    dom.genProgressBar.style.width = pctMatch[1] + '%';
-                                }
-                                if (this.lastLoggedProgress !== task.progress_text) {
-                                    log(`[Seg #${segIndex}] ${task.progress_text}`, 'log-info');
-                                    this.lastLoggedProgress = task.progress_text;
-                                }
-                                // Progress updated via bar
+                                log(`[Seg #${segIndex}] ${task.progress_text}`, 'log-info');
                             }
 
                             if (task.status === 1) {
@@ -1580,7 +1312,6 @@
                                 resolve(task.result);
                                 return;
                             } else if (task.status === 2) {
-                                dom.genProgressWrap.style.display = 'none';
                                 reject(new Error('Task failed on server'));
                                 return;
                             }
@@ -1769,8 +1500,7 @@
                         this.paused = true;
                         log('Buffer underrun — waiting for next segment...', 'log-warn');
                         dom.bufferStatus.textContent = 'UNDERRUN';
-                        dom.genProgressBar.style.width = '0%';
-            setPipelineStage('generating');
+                        setPipelineStage('generating');
                     }
                 }
             }
@@ -1800,7 +1530,6 @@
         async _generateNext() {
             if (!this.running || this.generating) return;
             this.generating = true;
-            this.lastLoggedProgress = null;
 
             const requestedContextDur = parseInt(dom.contextDuration.value, 10);
             let contextDur = requestedContextDur;
@@ -2633,8 +2362,7 @@
     // ================================================================
     // Initial footer state
     // ================================================================
-    dom.genProgressWrap.style.display = 'none';
-            setPipelineStage('idle');
+    setPipelineStage('idle');
 
 })();
 </script>
